@@ -16,6 +16,10 @@ DIAS_ANTECEDENCIA = 3
 MODO_TESTE = True
 TELEFONE_TESTE = "+553588284302"
 
+API_KEY = "sua_chave_aqui"  # Substitua pela sua chave rea  nirholas
+
+
+
 # ── Serialização ─────────────────────────────────────────────────
 
 def limpar_parcela(p: dict) -> dict:
@@ -25,14 +29,13 @@ def limpar_parcela(p: dict) -> dict:
         for k, v in p.items()
     }
 
-# ── Filtro de Redirecionamento e Teste ───────────────────────────
 
 def filtrar_e_redirecionar(parcelas: list) -> list:
     resultado_final = []
     digits_teste = ''.join(filter(str.isdigit, TELEFONE_TESTE))[-11:]
 
     for p in parcelas:
-        # Se houver telefone_rh vindo do LEFT JOIN, redireciona
+    
         if p.get('telefone_rh'):
             p['telefone'] = p['telefone_rh']
             p['cliente_nome'] = f"[RH] {p['cliente_nome']}"
@@ -41,7 +44,7 @@ def filtrar_e_redirecionar(parcelas: list) -> list:
         if not MODO_TESTE:
             resultado_final.append(p)
         else:
-            # Em modo teste, só passa se o destino for o SEU telefone
+
             tel_atual = p.get('telefone') or ""
             digits_p = ''.join(filter(str.isdigit, tel_atual))
             if digits_p[-11:] == digits_teste:

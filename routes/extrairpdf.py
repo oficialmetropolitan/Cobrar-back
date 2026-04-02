@@ -65,12 +65,11 @@ async def extrair_ccb(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Apenas arquivos PDF são aceitos.")
 
-    # Lê e extrai texto do PDF
     content = await file.read()
     try:
         reader = PdfReader(io.BytesIO(content))
         text = ""
-        for page in reader.pages:  # máximo 5 páginas
+        for page in reader.pages: 
             text += (page.extract_text() or "") + "\n"
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Erro ao ler o PDF: {str(e)}")
@@ -96,7 +95,7 @@ async def extrair_ccb(file: UploadFile = File(...)):
 {{
   "nome": "nome completo do emitente",
   "cpf_cnpj": "CPF ou CNPJ somente números",
-  "telefone": "telefone somente números ",
+  "telefone": "Celular somente números ache ele nas paginas 11 ou 12",
   "email": "email",
   "valor_enviado": valor líquido como número decimal ex: 3000.00,
 "montante": valor total da parcela multiplicado pela quantidade de parcelas como número decimal ex: se parcela=584.17 e 6x entao 3505.02,
@@ -110,7 +109,7 @@ async def extrair_ccb(file: UploadFile = File(...)):
 }}
 
 Texto do contrato:
-{text[:6000]}""",
+{text[:50000]}""",
                 },
             ],
         )
