@@ -9,18 +9,17 @@ async def resumo_geral():
     pool = get_pool()
 
     total = await pool.fetchrow("""
-    SELECT
-        COUNT(DISTINCT c.id)                        AS total_clientes,
-        COUNT(DISTINCT ct.id)                       AS total_contratos,
-        SUM(ct.valor_enviado)                       AS capital_total_emprestado,
-        COALESCE(SUM(p.valor_pago), 0)              AS montante_total_carteira,
-        COALESCE(SUM(ct.valor_parcela), 0)          AS receita_mensal_esperada,
-        COALESCE(SUM(ct.spread_total), 0)           AS spread_total_carteira
-    FROM clientes c
-    JOIN contratos ct ON ct.cliente_id = c.id
-    LEFT JOIN parcelas p ON p.contrato_id = ct.id AND p.status = 'pago'
-    WHERE c.ativo = TRUE AND ct.ativo = TRUE
-""")
+        SELECT
+            COUNT(DISTINCT c.id)           AS total_clientes,
+            COUNT(DISTINCT ct.id)          AS total_contratos,
+            SUM(ct.valor_enviado)          AS capital_total_emprestado,
+            SUM(ct.montante)               AS montante_total_carteira,
+            COALESCE(SUM(ct.valor_parcela), 0)     AS receita_mensal_esperada,
+            COALESCE(SUM(ct.spread_total), 0)      AS spread_total_carteira
+        FROM clientes c
+        JOIN contratos ct ON ct.cliente_id = c.id
+        WHERE c.ativo = TRUE AND ct.ativo = TRUE
+    """)
 
 
     status = await pool.fetch("""
