@@ -50,7 +50,7 @@ class ContratoCreate(BaseModel):
     taxa_mensal: Optional[Decimal] = None
     valor_parcela: Decimal
     spread_por_parcela: Optional[Decimal] = None
-    data_inicio: Optional[date] = None
+    data_inicio: Optional[str] = None
 
 
 class ContratoUpdate(BaseModel):
