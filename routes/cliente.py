@@ -267,3 +267,63 @@ async def onboarding(payload: OnboardingIn):
     }
 
 
+@router.patch("/{cliente_id}/dia-vencimento")
+async def atualizar_dia_vencimento(cliente_id: int, novo_dia: int):
+    if not (1 <= novo_dia <= 28):
+        raise HTTPException(400, "novo_dia deve estar entre 1 e 28")
+
+    pool = get_pool()
+    parcelas_atualizadas = 0
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+
+            # 1. Verifica e atualiza o cliente
+            cliente = await conn.fetchrow(
+                "SELECT id FROM clientes WHERE id = $1", cliente_id
+            )
+            if not cliente:
+                raise HTTPException(404, "Cliente não encontrado")
+
+            await conn.execute(
+                "UPDATE clientes SET dia_vencimento = $1 WHERE id = $2",
+                novo_dia, cliente_id
+            )
+
+            # 2. Busca todas as parcelas pendentes/atrasadas do cliente
+            parcelas = await conn.fetch(
+                """
+                SELECT p.id, p.data_vencimento
+                FROM parcelas p
+                JOIN contratos ct ON ct.id = p.contrato_id
+                WHERE ct.cliente_id = $1
+                  AND p.status IN ('pendente', 'atrasado')
+                """,
+                cliente_id
+            )
+
+            # 3. Atualiza o dia de cada parcela mantendo ano e mês
+            for parcela in parcelas:
+                data_atual = parcela["data_vencimento"]
+                # asyncpg pode retornar datetime — garante date
+                if hasattr(data_atual, "date"):
+                    data_atual = data_atual.date()
+
+                nova_data = data_atual.replace(day=novo_dia)
+                novo_status = "atrasado" if nova_data < date.today() else "pendente"
+
+                await conn.execute(
+                    """
+                    UPDATE parcelas
+                    SET data_vencimento = $1,
+                        status = $2
+                    WHERE id = $3
+                    """,
+                    nova_data, novo_status, parcela["id"]
+                )
+                parcelas_atualizadas += 1
+
+    return {
+        "mensagem": f"Dia de vencimento atualizado para {novo_dia}",
+        "parcelas_atualizadas": parcelas_atualizadas,
+    }

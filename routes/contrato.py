@@ -134,13 +134,14 @@ async def atualizar_contrato(contrato_id: int, payload: ContratoUpdate):
                     if numero in numeros_pagos:
                         continue
 
-                    # Data de vencimento: data_inicio + i meses, no dia de vencimento
-                    vencimento_base = data_inicio + relativedelta(months=i)
+                    # ✅ CORREÇÃO: usa months=i+1 igual ao onboarding,
+                    # garantindo que cada parcela caia em um mês diferente
+                    # (parcela 1 = data_inicio + 1 mês, parcela 2 = +2 meses, etc.)
+                    vencimento_base = data_inicio + relativedelta(months=i + 1)
                     data_vencimento = vencimento_base.replace(day=dia_vencimento)
 
-                    # mes_referencia = mês SEGUINTE ao vencimento
-                    mes_ref_date   = data_vencimento + relativedelta(months=1)
-                    mes_referencia = mes_ref_date.strftime("%Y-%m")
+                    # mes_referencia = mesmo mês do vencimento
+                    mes_referencia = data_vencimento.strftime("%Y-%m")
 
                     status = "atrasado" if data_vencimento < date.today() else "pendente"
 
@@ -201,3 +202,4 @@ async def parcelas_do_contrato(contrato_id: int, status: Optional[str] = None):
     query += " ORDER BY data_vencimento"
     rows = await pool.fetch(query, *args)
     return [dict(r) for r in rows]
+
