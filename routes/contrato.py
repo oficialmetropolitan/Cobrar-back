@@ -8,6 +8,20 @@ from dateutil.relativedelta import relativedelta
 router = APIRouter()
 
 
+def _para_date_puro(valor) -> date:
+    """
+    Converte qualquer representação de data vinda do asyncpg para um date
+    puro sem timezone, evitando o bug de UTC-3 que faz salvar 2 dias antes.
+    """
+    if valor is None:
+        return date.today()
+    if hasattr(valor, "date"):
+        return valor.date()
+    if isinstance(valor, date):
+        return valor
+    return date.fromisoformat(str(valor)[:10])
+
+
 @router.get("/", response_model=List[ContratoOut])
 async def listar_contratos(ativo: Optional[bool] = True):
     pool = get_pool()
@@ -43,15 +57,9 @@ async def criar_contrato(payload: ContratoCreate):
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
         RETURNING *
         """,
-        payload.cliente_id,
-        payload.valor_enviado,
-        payload.montante,
-        payload.spread_total,
-        payload.num_parcelas,
-        payload.taxa_mensal,
-        payload.valor_parcela,
-        payload.spread_por_parcela,
-        payload.data_inicio,
+        payload.cliente_id, payload.valor_enviado, payload.montante,
+        payload.spread_total, payload.num_parcelas, payload.taxa_mensal,
+        payload.valor_parcela, payload.spread_por_parcela, payload.data_inicio,
     )
     return dict(row)
 
@@ -65,10 +73,11 @@ async def atualizar_contrato(contrato_id: int, payload: ContratoUpdate):
 
     CAMPOS_QUE_REGENERAM = {"valor_parcela", "num_parcelas", "data_inicio", "spread_por_parcela"}
     deve_regenerar = bool(CAMPOS_QUE_REGENERAM & set(data.keys()))
+    parcelas_criadas = 0
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # 1. Atualiza o contrato
+
             sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(data.keys()))
             await conn.execute(
                 f"UPDATE contratos SET {sets} WHERE id = $1",
@@ -76,53 +85,66 @@ async def atualizar_contrato(contrato_id: int, payload: ContratoUpdate):
             )
 
             contrato = await conn.fetchrow("SELECT * FROM contratos WHERE id = $1", contrato_id)
-            cliente = await conn.fetchrow("SELECT dia_vencimento FROM clientes WHERE id = $1", contrato["cliente_id"])
+            if not contrato:
+                raise HTTPException(status_code=404, detail="Contrato não encontrado")
+
+            cliente = await conn.fetchrow(
+                "SELECT dia_vencimento FROM clientes WHERE id = $1", contrato["cliente_id"]
+            )
+            if not cliente:
+                raise HTTPException(status_code=404, detail="Cliente não encontrado")
+
             dia_vencimento = cliente["dia_vencimento"]
 
             if deve_regenerar:
-                # Preservar pagas e deletar o resto
-                pagas = await conn.fetch("SELECT numero_parcela FROM parcelas WHERE contrato_id = $1 AND status = 'pago'", contrato_id)
+                pagas = await conn.fetch(
+                    "SELECT numero_parcela FROM parcelas WHERE contrato_id = $1 AND status = 'pago'",
+                    contrato_id
+                )
                 numeros_pagos = {r["numero_parcela"] for r in pagas}
-                await conn.execute("DELETE FROM parcelas WHERE contrato_id = $1 AND status != 'pago'", contrato_id)
 
-                # CORREÇÃO AQUI: Forçar data_inicio para date puro
-                data_base = contrato["data_inicio"]
-                if hasattr(data_base, "date"): # Se vier datetime do asyncpg
-                    data_base = data_base.date()
-                
-                # Se data_base for None por algum motivo, usa hoje
-                if not data_base:
-                    data_base = date.today()
+                await conn.execute(
+                    "DELETE FROM parcelas WHERE contrato_id = $1 AND status != 'pago'",
+                    contrato_id
+                )
 
-                parcelas_criadas = 0
+                # ✅ Garante date puro — elimina o bug do UTC-3
+                data_base = _para_date_puro(contrato["data_inicio"])
+
                 for i in range(contrato["num_parcelas"]):
                     numero = i + 1
                     if numero in numeros_pagos:
                         continue
 
-                    # Calcula o mês correto
                     vencimento_base = data_base + relativedelta(months=i + 1)
-                    
-                    # CORREÇÃO: Evitar erro de dia inexistente (ex: dia 31 em fevereiro)
-                    # O dia_vencimento deve estar entre 1 e 28 conforme seu validador, 
-                    # então o replace(day=...) é seguro aqui.
-                    data_vencimento = vencimento_base.replace(day=dia_vencimento)
+                    # ✅ Constrói date puro com date() — nunca usa .replace() em datetime
+                    data_vencimento = date(vencimento_base.year, vencimento_base.month, dia_vencimento)
+                    mes_referencia  = data_vencimento.strftime("%Y-%m")
+                    status          = "atrasado" if data_vencimento < date.today() else "pendente"
 
                     await conn.execute(
                         """
                         INSERT INTO parcelas (contrato_id, numero_parcela, total_parcelas,
-                        mes_referencia, data_vencimento, valor, status)
+                            mes_referencia, data_vencimento, valor, status)
                         VALUES ($1, $2, $3, $4, $5, $6, $7)
                         """,
                         contrato_id, numero, contrato["num_parcelas"],
-                        data_vencimento.strftime("%Y-%m"), data_vencimento,
-                        contrato["valor_parcela"], 
-                        "atrasado" if data_vencimento < date.today() else "pendente"
+                        mes_referencia, data_vencimento,
+                        contrato["valor_parcela"], status,
                     )
                     parcelas_criadas += 1
 
-    return {"mensagem": "Sucesso", "parcelas_regeneradas": parcelas_criadas}
+                if "num_parcelas" in data and numeros_pagos:
+                    await conn.execute(
+                        "UPDATE parcelas SET total_parcelas = $1 WHERE contrato_id = $2 AND status = 'pago'",
+                        contrato["num_parcelas"], contrato_id
+                    )
 
+    return {
+        "mensagem": "Contrato atualizado com sucesso!",
+        "parcelas_regeneradas": parcelas_criadas,
+        "deve_regenerar": deve_regenerar,
+    }
 
 
 @router.delete("/{contrato_id}", status_code=204)
@@ -146,4 +168,3 @@ async def parcelas_do_contrato(contrato_id: int, status: Optional[str] = None):
     query += " ORDER BY data_vencimento"
     rows = await pool.fetch(query, *args)
     return [dict(r) for r in rows]
-
