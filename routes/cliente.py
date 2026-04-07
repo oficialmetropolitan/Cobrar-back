@@ -7,24 +7,24 @@ from datetime import date
 from dateutil.relativedelta import relativedelta
 from decimal import Decimal
 
+
 from database import get_pool
 
 router = APIRouter()
-
+from datetime import date, datetime
 
 def _para_date_puro(valor) -> date:
-    """
-    Converte qualquer representação de data vinda do asyncpg para um date
-    puro sem timezone, evitando o bug de UTC-3 que faz salvar 2 dias antes.
-    """
     if valor is None:
         return date.today()
-    if hasattr(valor, "date"):       # datetime com ou sem timezone
-        return valor.date()
-    if isinstance(valor, date):      # já é date puro
-        return valor
-    return date.fromisoformat(str(valor)[:10])  # string ISO
 
+    
+    if isinstance(valor, datetime):
+        return date(valor.year, valor.month, valor.day)
+
+    if type(valor) is date:
+        return valor
+
+    return date.fromisoformat(str(valor)[:10])
 
 @router.get("/", response_model=List[ClienteOut])
 async def listar_clientes(

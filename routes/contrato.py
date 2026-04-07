@@ -7,20 +7,22 @@ from dateutil.relativedelta import relativedelta
 
 router = APIRouter()
 
+from datetime import date, datetime
 
 def _para_date_puro(valor) -> date:
-    """
-    Converte qualquer representação de data vinda do asyncpg para um date
-    puro sem timezone, evitando o bug de UTC-3 que faz salvar 2 dias antes.
-    """
     if valor is None:
         return date.today()
-    if hasattr(valor, "date"):
-        return valor.date()
-    if isinstance(valor, date):
-        return valor
-    return date.fromisoformat(str(valor)[:10])
 
+    # 🔥 trata datetime ANTES (essencial)
+    if isinstance(valor, datetime):
+        return date(valor.year, valor.month, valor.day)
+
+    # date puro (sem timezone)
+    if type(valor) is date:
+        return valor
+
+    # string ISO ou fallback
+    return date.fromisoformat(str(valor)[:10])
 
 @router.get("/", response_model=List[ContratoOut])
 async def listar_contratos(ativo: Optional[bool] = True):
