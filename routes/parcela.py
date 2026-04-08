@@ -17,6 +17,7 @@ async def listar_parcelas(
     args = []
 
     conds.append("p.status IN ('pendente', 'atrasado')")
+    conds.append("c.status = 'ativo'")
 
     if mes_referencia:
         args.append(mes_referencia)
@@ -96,20 +97,26 @@ async def atualizar_atrasadas():
 
 @router.post("/baixar-lote")
 async def baixar_lote(ids: List[int]):
-    """Dá baixa em uma lista específica de parcelas por ID."""
+    """Dá baixa em uma lista específica de parcelas por ID, mas apenas de clientes ATIVOS."""
     if not ids:
         raise HTTPException(400, "Nenhum ID informado")
 
     pool = get_pool()
+    
+    # Atualizado: Agora fazemos um JOIN com contratos e clientes para checar o status do cliente
     rows = await pool.fetch("""
-        UPDATE parcelas
+        UPDATE parcelas p
         SET status = 'pago',
             data_pagamento = CURRENT_DATE,
-            valor_pago = valor,
+            valor_pago = p.valor,
             observacao = 'Baixa manual em lote'
-        WHERE id = ANY($1::int[])
-          AND status IN ('pendente', 'atrasado')
-        RETURNING id
+        FROM contratos ct
+        JOIN clientes c ON c.id = ct.cliente_id
+        WHERE p.contrato_id = ct.id
+          AND p.id = ANY($1::int[])
+          AND p.status IN ('pendente', 'atrasado')
+          AND c.status = 'ativo'
+        RETURNING p.id
     """, ids)
 
     return {
@@ -121,9 +128,10 @@ async def baixar_lote(ids: List[int]):
 
 @router.post("/baixar-consignado")
 async def baixar_consignado_lote(mes: str, modalidade: str = "CONSIGNADO"):
-    """Dá baixa em todas as parcelas da modalidade para o mês de referência."""
+    """Dá baixa em todas as parcelas da modalidade para o mês de referência, apenas de clientes ATIVOS."""
     pool = get_pool()
 
+    # Atualizado: Adicionado o filtro "AND c.status = 'ativo'"
     query = """
     UPDATE parcelas p
     SET status = 'pago',
@@ -134,6 +142,7 @@ async def baixar_consignado_lote(mes: str, modalidade: str = "CONSIGNADO"):
     JOIN clientes c ON c.id = ct.cliente_id
     WHERE p.contrato_id = ct.id
       AND c.modalidade = $2
+      AND c.status = 'ativo' 
       AND p.data_vencimento >= DATE_TRUNC('month', TO_DATE($1, 'YYYY-MM'))
       AND p.data_vencimento < DATE_TRUNC('month', TO_DATE($1, 'YYYY-MM')) + INTERVAL '1 month'
       AND p.status IN ('pendente', 'atrasado')
@@ -146,7 +155,6 @@ async def baixar_consignado_lote(mes: str, modalidade: str = "CONSIGNADO"):
         "mensagem": f"Processamento concluído para {modalidade}",
         "total_baixado": len(rows)
     }
-
 
 # ✅ ROTAS DINÂMICAS POR ÚLTIMO
 

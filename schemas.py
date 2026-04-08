@@ -2,7 +2,12 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import date
 from decimal import Decimal
+from enum import Enum
 
+class StatusCliente(str, Enum):
+    ativo = "ativo"
+    inativo = "inativo"
+    negativo = "negativo"
 
 # ─────────────── Clientes ───────────────
 
@@ -13,7 +18,7 @@ class ClienteCreate(BaseModel):
     telefone: Optional[str] = None
     email: Optional[str] = None
     cpf_cnpj: Optional[str] = None
-
+    status: StatusCliente = StatusCliente.ativo  # default: ATIVO
 
 class ClienteUpdate(BaseModel):
     nome: Optional[str] = None
@@ -22,8 +27,7 @@ class ClienteUpdate(BaseModel):
     telefone: Optional[str] = None
     email: Optional[str] = None
     cpf_cnpj: Optional[str] = None
-    ativo: Optional[bool] = None
-
+    status: Optional[StatusCliente] = None  # era: ativo: Optional[bool]
 
 class ClienteOut(BaseModel):
     id: int
@@ -33,11 +37,10 @@ class ClienteOut(BaseModel):
     telefone: Optional[str]
     email: Optional[str]
     cpf_cnpj: Optional[str]
-    ativo: bool
+    status: StatusCliente  # era: ativo: bool
 
     class Config:
         from_attributes = True
-
 
 # ─────────────── Contratos ───────────────
 
@@ -113,7 +116,5 @@ class ParcelaOut(BaseModel):
 
     class Config:
         from_attributes = True
-
-
 
         

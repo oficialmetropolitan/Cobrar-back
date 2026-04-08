@@ -30,7 +30,7 @@ SELECT
 FROM clientes c
 JOIN contratos ct ON ct.cliente_id = c.id
 LEFT JOIN resumo_parcelas rp ON rp.contrato_id = ct.id
-WHERE c.ativo = TRUE AND ct.ativo = TRUE;
+WHERE c.status = 'ativo' AND ct.ativo = TRUE;
 """)
 
 

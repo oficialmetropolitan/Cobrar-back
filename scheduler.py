@@ -66,7 +66,7 @@ async def buscar_parcelas(conn, data_vencimento: date = None, apenas_atrasadas: 
         JOIN contratos ct ON ct.id = p.contrato_id
         JOIN clientes c ON c.id = ct.cliente_id
         LEFT JOIN modalidades_config m ON m.modalidade = c.modalidade
-        WHERE c.ativo = true
+        WHERE c.status = 'ativo'
           AND (p.data_ultima_cobranca IS NULL OR p.data_ultima_cobranca < CURRENT_DATE)
     """
     

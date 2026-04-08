@@ -29,16 +29,16 @@ def _para_date_puro(valor) -> date:
 @router.get("/", response_model=List[ClienteOut])
 async def listar_clientes(
     modalidade: Optional[str] = None,
-    ativo: Optional[bool] = None,
+    status: Optional[str] = None,
     search: Optional[str] = None,
 ):
     pool = get_pool()
     conditions = ["1=1"]
     args = []
 
-    if ativo is not None:
-        args.append(ativo)
-        conditions.append(f"ativo = ${len(args)}")
+    if status is not None:
+        args.append(status)
+        conditions.append(f"status = ${len(args)}")
     if modalidade:
         args.append(modalidade)
         conditions.append(f"modalidade = ${len(args)}")
@@ -48,7 +48,7 @@ async def listar_clientes(
 
     where = " AND ".join(conditions)
     rows = await pool.fetch(
-        f"SELECT * FROM clientes WHERE {where} ORDER BY nome", *args
+        f"SELECT * /* v2 */ FROM clientes WHERE {where} ORDER BY nome", *args
     )
     return [dict(r) for r in rows]
 
