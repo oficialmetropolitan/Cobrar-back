@@ -65,7 +65,7 @@ class ContratoUpdate(BaseModel):
     valor_parcela: Optional[Decimal] = None
     spread_por_parcela: Optional[Decimal] = None
     ativo: Optional[bool] = None
-    data_inicio: Optional[date]    = None
+    data_inicio: Optional[str] = None
 
 
 class ContratoOut(BaseModel):
@@ -78,7 +78,7 @@ class ContratoOut(BaseModel):
     taxa_mensal: Optional[Decimal]
     valor_parcela: Decimal
     spread_por_parcela: Optional[Decimal]
-    data_inicio: Optional[date]
+    data_inicio: Optional[str]
     ativo: bool
 
     class Config:

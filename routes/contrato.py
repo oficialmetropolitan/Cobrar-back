@@ -9,6 +9,14 @@ router = APIRouter()
 
 from datetime import date, datetime
 
+def normalizar_datas(obj: dict):
+    for k, v in obj.items():
+        if isinstance(v, datetime):
+            obj[k] = v.date().isoformat()
+        elif isinstance(v, date):
+            obj[k] = v.isoformat()
+    return obj
+
 def _para_date_puro(valor) -> date:
     if valor is None:
         return date.today()
@@ -30,7 +38,7 @@ async def listar_contratos(ativo: Optional[bool] = True):
     rows = await pool.fetch(
         "SELECT * FROM contratos WHERE ativo = $1 ORDER BY id", ativo
     )
-    return [dict(r) for r in rows]
+    return [normalizar_datas(dict(r)) for r in rows]
 
 
 @router.get("/{contrato_id}", response_model=ContratoOut)
@@ -39,7 +47,7 @@ async def buscar_contrato(contrato_id: int):
     row = await pool.fetchrow("SELECT * FROM contratos WHERE id = $1", contrato_id)
     if not row:
         raise HTTPException(status_code=404, detail="Contrato não encontrado")
-    return dict(row)
+    return normalizar_datas(dict(row))
 
 
 @router.post("/", response_model=ContratoOut, status_code=201)
@@ -63,7 +71,7 @@ async def criar_contrato(payload: ContratoCreate):
         payload.spread_total, payload.num_parcelas, payload.taxa_mensal,
         payload.valor_parcela, payload.spread_por_parcela, payload.data_inicio,
     )
-    return dict(row)
+    return normalizar_datas(dict(row))
 
 
 @router.patch("/{contrato_id}")
