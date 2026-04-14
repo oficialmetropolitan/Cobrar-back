@@ -33,6 +33,12 @@ EVENTOS_PAGAMENTO_CONFIRMADO = {
 _logs_recebidos = []  # armazena em memória os últimos 50 eventos
 
 
+@router.get("/webhook/btg/inspecionar")
+async def webhook_inspecionar_get():
+    """Validação da URL pelo painel BTG."""
+    return {"ok": True, "status": "webhook ativo"}
+
+
 @router.post("/webhook/btg/inspecionar")
 async def webhook_inspecionar(request: Request):
     """
