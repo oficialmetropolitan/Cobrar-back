@@ -1,10 +1,11 @@
 import hmac
 import hashlib
 import logging
+import json
 from datetime import date, datetime
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel
-from typing import Optional, Any, Dict
+from typing import Optional
 from database import get_pool
 import os
 
@@ -22,44 +23,76 @@ EVENTOS_PAGAMENTO_CONFIRMADO = {
 }
 
 
-# ─── Schemas para aparecer no Swagger ─────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 🔍 ENDPOINT DE INSPEÇÃO — veja tudo que o BTG está mandando
+# Configure no painel BTG a URL:
+#   https://painelapi.bancometropolitan.com.br/webhook/btg/inspecionar
+# Depois acesse GET /webhook/btg/logs para ver os payloads recebidos
+# ─────────────────────────────────────────────────────────────────────────────
 
-class BankSlipInfo(BaseModel):
-    ourNumber:   Optional[str] = None
-    externalId:  Optional[str] = None
-    id:          Optional[str] = None
-    correlationId: Optional[str] = None
-    amount:      Optional[float] = None
-    valor:       Optional[float] = None
-    paymentDate: Optional[str] = None
-    paidAt:      Optional[str] = None
-
-class WebhookBoletoPayload(BaseModel):
-    event:    str
-    bankSlip: Optional[BankSlipInfo] = None
-    data:     Optional[BankSlipInfo] = None
-
-class PixInfo(BaseModel):
-    txid:          Optional[str] = None
-    correlationId: Optional[str] = None
-    endToEndId:    Optional[str] = None
-    status:        Optional[str] = None
-    valor:         Optional[float] = None
-    amount:        Optional[float] = None
-    horario:       Optional[str] = None
-    dataHora:      Optional[str] = None
-
-class WebhookPixPayload(BaseModel):
-    event:  Optional[str] = None
-    pix:    Optional[PixInfo] = None
-    txid:          Optional[str] = None
-    correlationId: Optional[str] = None
-    status:        Optional[str] = None
-    valor:         Optional[float] = None
-    horario:       Optional[str] = None
+_logs_recebidos = []  # armazena em memória os últimos 50 eventos
 
 
-# ─── Função compartilhada ──────────────────────────────────────────────────────
+@router.post("/webhook/btg/inspecionar")
+async def webhook_inspecionar(request: Request):
+    """
+    Endpoint temporário para inspecionar payloads reais do BTG.
+    Configure esta URL no painel BTG para qualquer evento.
+    Depois acesse GET /webhook/btg/logs para ver o que chegou.
+    """
+    try:
+        body_bytes = await request.body()
+        body_json = json.loads(body_bytes)
+    except Exception:
+        body_json = {"erro": "body não era JSON válido"}
+
+    headers_relevantes = {
+        k: v for k, v in request.headers.items()
+        if k.lower() in {
+            "x-btg-signature", "content-type", "user-agent",
+            "x-event-type", "x-webhook-id", "x-btg-event"
+        }
+    }
+
+    entrada = {
+        "recebido_em": datetime.now().isoformat(),
+        "headers": headers_relevantes,
+        "payload": body_json,
+    }
+
+    _logs_recebidos.append(entrada)
+
+    # Mantém só os últimos 50
+    if len(_logs_recebidos) > 50:
+        _logs_recebidos.pop(0)
+
+    logger.info(f"📥 Webhook BTG inspecionado: {json.dumps(body_json, ensure_ascii=False)}")
+
+    return {"ok": True, "mensagem": "Payload registrado. Acesse GET /webhook/btg/logs para ver."}
+
+
+@router.get("/webhook/btg/logs")
+async def webhook_logs():
+    """
+    Retorna os últimos eventos recebidos pelo endpoint de inspeção.
+    Use para descobrir o formato real dos payloads do BTG.
+    """
+    return {
+        "total": len(_logs_recebidos),
+        "eventos": list(reversed(_logs_recebidos)),  # mais recente primeiro
+    }
+
+
+@router.delete("/webhook/btg/logs")
+async def webhook_logs_limpar():
+    """Limpa os logs de inspeção."""
+    _logs_recebidos.clear()
+    return {"ok": True, "mensagem": "Logs limpos"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Função compartilhada de pagamento
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _verificar_assinatura(payload_bytes: bytes, assinatura: str) -> bool:
     if not BTG_WEBHOOK_SECRET:
@@ -141,28 +174,55 @@ async def _marcar_parcela_paga(pool, txid: str, valor_recebido, data_pagamento_s
     }
 
 
-# ─── Endpoints ─────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Schemas
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BankSlipInfo(BaseModel):
+    ourNumber:    Optional[str] = None
+    externalId:   Optional[str] = None
+    id:           Optional[str] = None
+    correlationId: Optional[str] = None
+    amount:       Optional[float] = None
+    valor:        Optional[float] = None
+    paymentDate:  Optional[str] = None
+    paidAt:       Optional[str] = None
+
+class WebhookBoletoPayload(BaseModel):
+    event:    str
+    bankSlip: Optional[BankSlipInfo] = None
+    data:     Optional[BankSlipInfo] = None
+
+class PixInfo(BaseModel):
+    txid:          Optional[str] = None
+    correlationId: Optional[str] = None
+    endToEndId:    Optional[str] = None
+    status:        Optional[str] = None
+    valor:         Optional[float] = None
+    amount:        Optional[float] = None
+    horario:       Optional[str] = None
+    dataHora:      Optional[str] = None
+
+class WebhookPixPayload(BaseModel):
+    event:         Optional[str] = None
+    pix:           Optional[PixInfo] = None
+    txid:          Optional[str] = None
+    correlationId: Optional[str] = None
+    status:        Optional[str] = None
+    valor:         Optional[float] = None
+    horario:       Optional[str] = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Endpoints de produção
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/webhook/btg/boleto")
 async def webhook_boleto(
     payload: WebhookBoletoPayload,
     x_btg_signature: Optional[str] = Header(default=None),
 ):
-    """
-    Recebe notificações de boleto pago (bank-slips.paid).
-
-    Exemplo de body para testar:
-    ```json
-    {
-      "event": "bank-slips.paid",
-      "bankSlip": {
-        "ourNumber": "SEU_TXID_AQUI",
-        "amount": 500.00,
-        "paymentDate": "2026-04-14"
-      }
-    }
-    ```
-    """
+    """Recebe notificações de boleto pago (bank-slips.paid)."""
     if payload.event != "bank-slips.paid":
         return {"ok": True, "acao": "ignorado", "evento": payload.event}
 
@@ -189,21 +249,7 @@ async def webhook_pix(
     payload: WebhookPixPayload,
     x_btg_signature: Optional[str] = Header(default=None),
 ):
-    """
-    Recebe notificações de PIX Cobrança pago.
-
-    Exemplo de body para testar:
-    ```json
-    {
-      "event": "pix-cash-in.cob.concluida",
-      "pix": {
-        "txid": "SEU_TXID_AQUI",
-        "valor": 500.00,
-        "horario": "2026-04-14T10:00:00Z"
-      }
-    }
-    ```
-    """
+    """Recebe notificações de PIX Cobrança pago."""
     pix = payload.pix
     evento = (payload.event or (pix.status if pix else "") or "").lower()
 
