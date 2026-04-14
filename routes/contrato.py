@@ -53,6 +53,8 @@ async def buscar_contrato(contrato_id: int):
 @router.post("/", response_model=ContratoOut, status_code=201)
 async def criar_contrato(payload: ContratoCreate):
     pool = get_pool()
+
+    data_inicio_tratada = _para_date_puro(payload.data_inicio)
     cliente = await pool.fetchrow(
         "SELECT id FROM clientes WHERE id = $1", payload.cliente_id
     )
@@ -69,7 +71,7 @@ async def criar_contrato(payload: ContratoCreate):
         """,
         payload.cliente_id, payload.valor_enviado, payload.montante,
         payload.spread_total, payload.num_parcelas, payload.taxa_mensal,
-        payload.valor_parcela, payload.spread_por_parcela, payload.data_inicio,
+        payload.valor_parcela, payload.spread_por_parcela, data_inicio_tratada
     )
     return normalizar_datas(dict(row))
 

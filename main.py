@@ -5,7 +5,10 @@ import logging
 
 from database import create_pool, close_pool
 from routes import cliente, contrato, parcela, dashboard, Onboarding, adiantamento, extrairpdf
+from routes.webhook_btg import router as webhook_btg_router
 from scheduler import criar_scheduler, job_cobrancas
+
+
 
 # Configuração de Logs básica para ver o agendador no terminal
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +56,7 @@ app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 app.include_router(Onboarding.router, prefix="/onboarding", tags=["Onboarding"])
 app.include_router(adiantamento.router, prefix="/adiantamentos", tags=["Adiantamentos"])
 app.include_router(extrairpdf.router, prefix="/api")
+app.include_router(webhook_btg_router, prefix="", tags=["Webhook BTG"])
 
 @app.get("/", tags=["Health"])
 async def root():

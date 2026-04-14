@@ -9,14 +9,14 @@ from database import get_pool
 logger = logging.getLogger(__name__)
 
 # ── Configurações ────────────────────────────────────────────────
-N8N_WEBHOOK_URL = "https://n8n.srv890438.hstgr.cloud/webhook-test/cobrancas" # Use a URL de Produção
+N8N_WEBHOOK_URL = "https://n8n.srv890438.hstgr.cloud/webhook-test/cobrancas" 
 DIAS_ANTECEDENCIA = 3
 
 # ── Modo de teste ─────────────────────────────────────────────────
 MODO_TESTE = True
 TELEFONE_TESTE = "+553588284302"
 
-API_KEY = "sua_chave_aqui"  # Substitua pela sua chave rea  nirholas
+API_KEY = "sua_chave_aqui"  
 
 
 
@@ -143,7 +143,7 @@ def criar_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
     scheduler.add_job(
         job_cobrancas,
-        trigger=CronTrigger(hour=8, minute=0), # Horário padrão sugerido
+        trigger=CronTrigger(hour=8, minute=0), 
         id="job_cobrancas",
         name="Cobranças automáticas diárias",
         replace_existing=True,
