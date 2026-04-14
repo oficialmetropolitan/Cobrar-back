@@ -2,8 +2,9 @@ import hmac
 import hashlib
 import logging
 from datetime import date, datetime
-from fastapi import APIRouter, HTTPException, Request, Header
-from typing import Optional
+from fastapi import APIRouter, HTTPException, Header
+from pydantic import BaseModel
+from typing import Optional, Any, Dict
 from database import get_pool
 import os
 
@@ -12,17 +13,53 @@ router = APIRouter()
 
 BTG_WEBHOOK_SECRET = os.getenv("BTG_WEBHOOK_SECRET", "")
 
-# ─── Eventos que significam "pagamento confirmado" ────────────────────────────
 EVENTOS_PAGAMENTO_CONFIRMADO = {
-    # PIX Cobrança
     "pix-cash-in.cob.concluida",
     "pix-cash-in.cob.pago",
-    "CONCLUIDA",
-    "PAGA",
-    # Boleto
+    "concluida",
+    "paga",
     "bank-slips.paid",
 }
 
+
+# ─── Schemas para aparecer no Swagger ─────────────────────────────────────────
+
+class BankSlipInfo(BaseModel):
+    ourNumber:   Optional[str] = None
+    externalId:  Optional[str] = None
+    id:          Optional[str] = None
+    correlationId: Optional[str] = None
+    amount:      Optional[float] = None
+    valor:       Optional[float] = None
+    paymentDate: Optional[str] = None
+    paidAt:      Optional[str] = None
+
+class WebhookBoletoPayload(BaseModel):
+    event:    str
+    bankSlip: Optional[BankSlipInfo] = None
+    data:     Optional[BankSlipInfo] = None
+
+class PixInfo(BaseModel):
+    txid:          Optional[str] = None
+    correlationId: Optional[str] = None
+    endToEndId:    Optional[str] = None
+    status:        Optional[str] = None
+    valor:         Optional[float] = None
+    amount:        Optional[float] = None
+    horario:       Optional[str] = None
+    dataHora:      Optional[str] = None
+
+class WebhookPixPayload(BaseModel):
+    event:  Optional[str] = None
+    pix:    Optional[PixInfo] = None
+    txid:          Optional[str] = None
+    correlationId: Optional[str] = None
+    status:        Optional[str] = None
+    valor:         Optional[float] = None
+    horario:       Optional[str] = None
+
+
+# ─── Função compartilhada ──────────────────────────────────────────────────────
 
 def _verificar_assinatura(payload_bytes: bytes, assinatura: str) -> bool:
     if not BTG_WEBHOOK_SECRET:
@@ -37,8 +74,6 @@ def _verificar_assinatura(payload_bytes: bytes, assinatura: str) -> bool:
 
 
 async def _marcar_parcela_paga(pool, txid: str, valor_recebido, data_pagamento_str: str, origem: str):
-    """Localiza a parcela pelo txid e marca como paga. Retorna o resultado."""
-
     parcela = await pool.fetchrow(
         """
         SELECT p.id, p.status, p.valor, c.nome
@@ -61,7 +96,6 @@ async def _marcar_parcela_paga(pool, txid: str, valor_recebido, data_pagamento_s
         logger.info(f"Parcela {parcela['id']} já estava paga — webhook ignorado")
         return {"ok": True, "acao": "ja_pago", "parcela_id": parcela["id"]}
 
-    # Resolve data de pagamento
     data_pgto = date.today()
     if data_pagamento_str:
         try:
@@ -107,78 +141,35 @@ async def _marcar_parcela_paga(pool, txid: str, valor_recebido, data_pagamento_s
     }
 
 
-@router.post("/webhook/btg/pix")
-async def webhook_pix(
-    request: Request,
-    x_btg_signature: Optional[str] = Header(default=None),
-):
-    """Recebe notificações de PIX Cobrança pago."""
-    payload_bytes = await request.body()
-
-    if not _verificar_assinatura(payload_bytes, x_btg_signature):
-        logger.warning("Assinatura inválida no webhook PIX")
-        raise HTTPException(status_code=401, detail="Assinatura inválida")
-
-    try:
-        data = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="JSON inválido")
-
-    logger.info(f"Webhook PIX BTG: {data}")
-
-    pix = data.get("pix") or data
-    evento_raw = data.get("event") or pix.get("status") or ""
-
-    if evento_raw not in EVENTOS_PAGAMENTO_CONFIRMADO and evento_raw.upper() not in {e.upper() for e in EVENTOS_PAGAMENTO_CONFIRMADO}:
-        return {"ok": True, "acao": "ignorado", "evento": evento_raw}
-
-    txid = pix.get("txid") or pix.get("correlationId") or pix.get("endToEndId") or ""
-    if not txid:
-        raise HTTPException(status_code=422, detail="txid ausente no payload PIX")
-
-    pool = get_pool()
-    return await _marcar_parcela_paga(
-        pool,
-        txid=txid,
-        valor_recebido=pix.get("valor") or pix.get("amount"),
-        data_pagamento_str=pix.get("horario") or pix.get("dataHora") or "",
-        origem="PIX",
-    )
-
+# ─── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/webhook/btg/boleto")
 async def webhook_boleto(
-    request: Request,
+    payload: WebhookBoletoPayload,
     x_btg_signature: Optional[str] = Header(default=None),
 ):
-    """Recebe notificações de boleto pago (bank-slips.paid)."""
-    payload_bytes = await request.body()
+    """
+    Recebe notificações de boleto pago (bank-slips.paid).
 
-    if not _verificar_assinatura(payload_bytes, x_btg_signature):
-        logger.warning("Assinatura inválida no webhook boleto")
-        raise HTTPException(status_code=401, detail="Assinatura inválida")
+    Exemplo de body para testar:
+    ```json
+    {
+      "event": "bank-slips.paid",
+      "bankSlip": {
+        "ourNumber": "SEU_TXID_AQUI",
+        "amount": 500.00,
+        "paymentDate": "2026-04-14"
+      }
+    }
+    ```
+    """
+    if payload.event != "bank-slips.paid":
+        return {"ok": True, "acao": "ignorado", "evento": payload.event}
 
-    try:
-        data = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="JSON inválido")
-
-    logger.info(f"Webhook Boleto BTG: {data}")
-
-    evento = data.get("event") or data.get("type") or ""
-
-    # Só processa bank-slips.paid
-    if evento != "bank-slips.paid":
-        return {"ok": True, "acao": "ignorado", "evento": evento}
-
-    boleto = data.get("bankSlip") or data.get("data") or data
-    txid = (
-        boleto.get("ourNumber") or      # número do boleto
-        boleto.get("externalId") or     # id externo que você define ao criar
-        boleto.get("id") or
-        boleto.get("correlationId") or
-        ""
-    )
+    boleto = payload.bankSlip or payload.data
+    txid = ""
+    if boleto:
+        txid = boleto.ourNumber or boleto.externalId or boleto.id or boleto.correlationId or ""
 
     if not txid:
         raise HTTPException(status_code=422, detail="Identificador ausente no payload do boleto")
@@ -187,7 +178,52 @@ async def webhook_boleto(
     return await _marcar_parcela_paga(
         pool,
         txid=txid,
-        valor_recebido=boleto.get("amount") or boleto.get("valor"),
-        data_pagamento_str=boleto.get("paymentDate") or boleto.get("paidAt") or "",
+        valor_recebido=boleto.amount or boleto.valor if boleto else None,
+        data_pagamento_str=boleto.paymentDate or boleto.paidAt or "" if boleto else "",
         origem="Boleto",
+    )
+
+
+@router.post("/webhook/btg/pix")
+async def webhook_pix(
+    payload: WebhookPixPayload,
+    x_btg_signature: Optional[str] = Header(default=None),
+):
+    """
+    Recebe notificações de PIX Cobrança pago.
+
+    Exemplo de body para testar:
+    ```json
+    {
+      "event": "pix-cash-in.cob.concluida",
+      "pix": {
+        "txid": "SEU_TXID_AQUI",
+        "valor": 500.00,
+        "horario": "2026-04-14T10:00:00Z"
+      }
+    }
+    ```
+    """
+    pix = payload.pix
+    evento = (payload.event or (pix.status if pix else "") or "").lower()
+
+    if evento not in EVENTOS_PAGAMENTO_CONFIRMADO:
+        return {"ok": True, "acao": "ignorado", "evento": evento}
+
+    txid = ""
+    if pix:
+        txid = pix.txid or pix.correlationId or pix.endToEndId or ""
+    if not txid:
+        txid = payload.txid or payload.correlationId or ""
+
+    if not txid:
+        raise HTTPException(status_code=422, detail="txid ausente no payload PIX")
+
+    pool = get_pool()
+    return await _marcar_parcela_paga(
+        pool,
+        txid=txid,
+        valor_recebido=(pix.valor or pix.amount) if pix else payload.valor,
+        data_pagamento_str=(pix.horario or pix.dataHora or "") if pix else (payload.horario or ""),
+        origem="PIX",
     )
