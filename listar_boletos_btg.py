@@ -18,8 +18,8 @@ CLIENT_ID     = os.getenv("BTG_CLIENT_ID", "8713b971-78bc-4d64-b8a7-1de325bc9e85
 CLIENT_SECRET = os.getenv("BTG_CLIENT_SECRET", "")
 REDIRECT_URI  = "https://painelapi.bancometropolitan.com.br/callback"
 
-AUTH_HOST = "https://id.sandbox.btgpactual.com"
-API_HOST  = "https://api.sandbox.empresas.btgpactual.com"
+AUTH_HOST = "https://id.btgpactual.com"
+API_HOST  = "https://api.empresas.btgpactual.com"
 
 SCOPES = "openid empresas.btgpactual.com/bank-slips.readonly empresas.btgpactual.com/accounts.readonly"
 

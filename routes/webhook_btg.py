@@ -2,6 +2,7 @@ import hmac
 import hashlib
 import logging
 import json
+import unicodedata
 from datetime import date, datetime
 from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel
@@ -14,18 +15,24 @@ router = APIRouter()
 
 BTG_WEBHOOK_SECRET = os.getenv("BTG_WEBHOOK_SECRET", "")
 
-EVENTOS_PAGAMENTO_CONFIRMADO = {
+EVENTOS_PIX_CONFIRMADO = {
     "pix-cash-in.cob.concluida",
     "pix-cash-in.cob.pago",
     "concluida",
     "paga",
-    "bank-slips.paid",
 }
 
 _logs_recebidos = []
 
 
-# ─── Assinatura ────────────────────────────────────────────────────────────────
+# ─── Helpers ───────────────────────────────────────────────────────────────────
+
+def _normalizar(texto: str) -> str:
+    if not texto:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", texto)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).upper().strip()
+
 
 def _verificar_assinatura(payload_bytes: bytes, assinatura: str) -> bool:
     if not BTG_WEBHOOK_SECRET:
@@ -39,35 +46,73 @@ def _verificar_assinatura(payload_bytes: bytes, assinatura: str) -> bool:
     return hmac.compare_digest(expected, assinatura or "")
 
 
-# ─── Marcar parcela como paga ──────────────────────────────────────────────────
+# ─── Busca parcela por nome + valor ───────────────────────────────────────────
 
-async def _marcar_parcela_paga(pool, txid: str, valor_recebido, data_pagamento_str: str, origem: str):
+async def _marcar_pago_por_nome_valor(
+    pool,
+    nome_pagador: str,
+    valor_pago: float,
+    data_pagamento_str: str,
+    origem: str,
+    slip_id: str = "",
+):
     """
-    Busca a parcela pelo txid salvo na coluna observacao e marca como paga.
-    O txid é o bankSlipId (boleto) ou txid (PIX) salvo quando a cobrança foi criada.
+    Busca a parcela pendente/atrasada pelo nome do cliente + valor.
+    Se houver mais de uma com mesmo valor, pega a de vencimento mais antigo.
     """
-    parcela = await pool.fetchrow(
+    nome_normalizado = _normalizar(nome_pagador)
+
+    # Busca todas as parcelas pendentes/atrasadas do cliente
+    rows = await pool.fetch(
         """
-        SELECT p.id, p.status, p.valor, c.nome
+        SELECT p.id, p.valor, p.status, p.data_vencimento, c.nome
         FROM parcelas p
         JOIN contratos ct ON ct.id = p.contrato_id
         JOIN clientes  c  ON c.id  = ct.cliente_id
-        WHERE p.observacao ILIKE $1
-           OR p.observacao = $2
+        WHERE p.status IN ('pendente', 'atrasado')
+          AND c.status = 'ativo'
+          AND UPPER(UNACCENT(c.nome)) = $1
+          AND ABS(p.valor - $2) <= 0.05
+        ORDER BY p.data_vencimento ASC
         LIMIT 1
         """,
-        f"%{txid}%",
-        txid,
+        nome_normalizado,
+        valor_pago,
     )
 
-    if not parcela:
-        logger.warning(f"Parcela não encontrada para txid={txid} (origem: {origem})")
-        return {"ok": True, "acao": "parcela_nao_encontrada", "txid": txid}
+    # Fallback sem UNACCENT caso extensão não esteja instalada
+    if not rows:
+        rows = await pool.fetch(
+            """
+            SELECT p.id, p.valor, p.status, p.data_vencimento, c.nome
+            FROM parcelas p
+            JOIN contratos ct ON ct.id = p.contrato_id
+            JOIN clientes  c  ON c.id  = ct.cliente_id
+            WHERE p.status IN ('pendente', 'atrasado')
+              AND c.status = 'ativo'
+              AND UPPER(c.nome) = $1
+              AND ABS(p.valor - $2) <= 0.05
+            ORDER BY p.data_vencimento ASC
+            LIMIT 1
+            """,
+            nome_normalizado,
+            valor_pago,
+        )
 
-    if parcela["status"] == "pago":
-        logger.info(f"Parcela {parcela['id']} já estava paga — webhook ignorado")
-        return {"ok": True, "acao": "ja_pago", "parcela_id": parcela["id"]}
+    if not rows:
+        logger.warning(
+            f"Parcela não encontrada — nome: '{nome_pagador}' | valor: R$ {valor_pago:.2f}"
+        )
+        return {
+            "ok": True,
+            "acao": "parcela_nao_encontrada",
+            "nome": nome_pagador,
+            "valor": valor_pago,
+        }
 
+    parcela = dict(rows[0])
+
+    # Data de pagamento
     data_pgto = date.today()
     if data_pagamento_str:
         try:
@@ -77,7 +122,9 @@ async def _marcar_parcela_paga(pool, txid: str, valor_recebido, data_pagamento_s
         except Exception:
             pass
 
-    valor_pago = float(valor_recebido) if valor_recebido else float(parcela["valor"])
+    observacao = f"Pago via {origem} BTG"
+    if slip_id:
+        observacao += f" | id: {slip_id}"
 
     row = await pool.fetchrow(
         """
@@ -92,13 +139,12 @@ async def _marcar_parcela_paga(pool, txid: str, valor_recebido, data_pagamento_s
         parcela["id"],
         data_pgto,
         valor_pago,
-        f"Pago via {origem} BTG | id: {txid}",
+        observacao,
     )
 
     logger.info(
         f"✅ Parcela {row['id']} marcada como PAGA — "
-        f"Cliente: {parcela['nome']} | Valor: R$ {valor_pago:.2f} | "
-        f"Origem: {origem} | id: {txid}"
+        f"Cliente: {parcela['nome']} | Valor: R$ {valor_pago:.2f} | Origem: {origem}"
     )
 
     return {
@@ -109,7 +155,6 @@ async def _marcar_parcela_paga(pool, txid: str, valor_recebido, data_pagamento_s
         "valor_pago": valor_pago,
         "data_pagamento": str(row["data_pagamento"]),
         "origem": origem,
-        "txid": txid,
     }
 
 
@@ -117,13 +162,12 @@ async def _marcar_parcela_paga(pool, txid: str, valor_recebido, data_pagamento_s
 
 @router.get("/webhook/btg/inspecionar")
 async def webhook_inspecionar_get():
-    """Validação da URL pelo painel BTG."""
     return {"ok": True, "status": "webhook ativo"}
 
 
 @router.post("/webhook/btg/inspecionar")
 async def webhook_inspecionar(request: Request):
-    """Endpoint temporário para inspecionar payloads reais do BTG."""
+    """Endpoint para inspecionar payloads reais do BTG."""
     try:
         body_bytes = await request.body()
         body_json = json.loads(body_bytes)
@@ -154,16 +198,11 @@ async def webhook_inspecionar(request: Request):
 
 @router.get("/webhook/btg/logs")
 async def webhook_logs():
-    """Retorna os últimos eventos recebidos."""
-    return {
-        "total": len(_logs_recebidos),
-        "eventos": list(reversed(_logs_recebidos)),
-    }
+    return {"total": len(_logs_recebidos), "eventos": list(reversed(_logs_recebidos))}
 
 
 @router.delete("/webhook/btg/logs")
 async def webhook_logs_limpar():
-    """Limpa os logs de inspeção."""
     _logs_recebidos.clear()
     return {"ok": True, "mensagem": "Logs limpos"}
 
@@ -171,8 +210,7 @@ async def webhook_logs_limpar():
 # ─── Schemas ───────────────────────────────────────────────────────────────────
 
 class BankSlipPayload(BaseModel):
-    """Payload real do BTG para eventos de boleto."""
-    bankSlipId:    Optional[str] = None   # ← identificador principal
+    bankSlipId:    Optional[str] = None
     correlationId: Optional[str] = None
     ourNumber:     Optional[str] = None
     externalId:    Optional[str] = None
@@ -180,15 +218,16 @@ class BankSlipPayload(BaseModel):
     paidAt:        Optional[str] = None
     settledAt:     Optional[str] = None
     status:        Optional[str] = None
+    payer:         Optional[dict] = None
 
 class WebhookBoletoPayload(BaseModel):
     event:      str
     bankSlip:   Optional[BankSlipPayload] = None
     data:       Optional[BankSlipPayload] = None
-    # BTG às vezes manda os campos direto no root
     bankSlipId: Optional[str] = None
     paidAt:     Optional[str] = None
     amount:     Optional[float] = None
+    payer:      Optional[dict] = None
 
 class PixInfo(BaseModel):
     txid:          Optional[str] = None
@@ -199,6 +238,7 @@ class PixInfo(BaseModel):
     amount:        Optional[float] = None
     horario:       Optional[str] = None
     dataHora:      Optional[str] = None
+    pagador:       Optional[dict] = None
 
 class WebhookPixPayload(BaseModel):
     event:         Optional[str] = None
@@ -210,7 +250,7 @@ class WebhookPixPayload(BaseModel):
     horario:       Optional[str] = None
 
 
-# ─── Endpoints de produção ─────────────────────────────────────────────────────
+# ─── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/webhook/btg/boleto")
 async def webhook_boleto(
@@ -219,15 +259,16 @@ async def webhook_boleto(
 ):
     """
     Recebe notificações de boleto pago (bank-slips.paid).
+    Busca a parcela pelo nome do pagador + valor — sem precisar de bankSlipId.
 
-    Exemplo de body para testar no Swagger:
+    Exemplo para testar no Swagger:
     ```json
     {
       "event": "bank-slips.paid",
       "bankSlip": {
-        "bankSlipId": "ID_SALVO_NA_OBSERVACAO_DA_PARCELA",
         "amount": 500.00,
-        "paidAt": "2026-04-15T10:00:00Z"
+        "paidAt": "2026-04-16T10:00:00Z",
+        "payer": {"name": "Nome Exato Do Cliente"}
       }
     }
     ```
@@ -235,32 +276,27 @@ async def webhook_boleto(
     if payload.event != "bank-slips.paid":
         return {"ok": True, "acao": "ignorado", "evento": payload.event}
 
-    # Busca o identificador — pode vir em bankSlip ou direto no root
     boleto = payload.bankSlip or payload.data
-    txid = ""
-    if boleto:
-        txid = (
-            boleto.bankSlipId or
-            boleto.correlationId or
-            boleto.ourNumber or
-            boleto.externalId or ""
-        )
-    if not txid:
-        txid = payload.bankSlipId or ""
+    payer  = (boleto.payer if boleto else None) or payload.payer or {}
 
-    if not txid:
-        raise HTTPException(status_code=422, detail="Identificador ausente no payload do boleto")
+    nome_pagador = payer.get("name", "")
+    valor        = (boleto.amount if boleto else None) or payload.amount or 0
+    data_pgto    = (boleto.paidAt or boleto.settledAt if boleto else None) or payload.paidAt or ""
+    slip_id      = (boleto.bankSlipId or boleto.correlationId if boleto else None) or payload.bankSlipId or ""
 
-    valor = (boleto.amount if boleto else None) or payload.amount
-    data_pgto = (boleto.paidAt or boleto.settledAt if boleto else None) or payload.paidAt or ""
+    if not nome_pagador:
+        raise HTTPException(status_code=422, detail="Nome do pagador ausente no payload")
+    if not valor:
+        raise HTTPException(status_code=422, detail="Valor ausente no payload")
 
     pool = get_pool()
-    return await _marcar_parcela_paga(
+    return await _marcar_pago_por_nome_valor(
         pool,
-        txid=txid,
-        valor_recebido=valor,
+        nome_pagador=nome_pagador,
+        valor_pago=float(valor),
         data_pagamento_str=data_pgto,
         origem="Boleto",
+        slip_id=slip_id,
     )
 
 
@@ -269,28 +305,45 @@ async def webhook_pix(
     payload: WebhookPixPayload,
     x_btg_signature: Optional[str] = Header(default=None),
 ):
-    """Recebe notificações de PIX Cobrança pago."""
-    pix = payload.pix
+    """
+    Recebe notificações de PIX Cobrança pago.
+    Busca a parcela pelo nome do pagador + valor.
+
+    Exemplo para testar no Swagger:
+    ```json
+    {
+      "event": "pix-cash-in.cob.concluida",
+      "pix": {
+        "valor": 500.00,
+        "horario": "2026-04-16T10:00:00Z",
+        "pagador": {"nome": "Nome Exato Do Cliente"}
+      }
+    }
+    ```
+    """
+    pix    = payload.pix
     evento = (payload.event or (pix.status if pix else "") or "").lower()
 
-    if evento not in EVENTOS_PAGAMENTO_CONFIRMADO:
-    
+    if evento not in EVENTOS_PIX_CONFIRMADO:
         return {"ok": True, "acao": "ignorado", "evento": evento}
 
-    txid = ""
-    if pix:
-        txid = pix.txid or pix.correlationId or pix.endToEndId or ""
-    if not txid:
-        txid = payload.txid or payload.correlationId or ""
+    pagador      = (pix.pagador if pix else None) or {}
+    nome_pagador = pagador.get("nome") or pagador.get("name") or ""
+    valor        = (pix.valor or pix.amount if pix else None) or payload.valor or 0
+    data_pgto    = (pix.horario or pix.dataHora if pix else None) or payload.horario or ""
+    txid         = (pix.txid or pix.correlationId if pix else None) or payload.txid or ""
 
-    if not txid:
-        raise HTTPException(status_code=422, detail="txid ausente no payload PIX")
+    if not nome_pagador:
+        raise HTTPException(status_code=422, detail="Nome do pagador ausente no payload PIX")
+    if not valor:
+        raise HTTPException(status_code=422, detail="Valor ausente no payload PIX")
 
     pool = get_pool()
-    return await _marcar_parcela_paga(
+    return await _marcar_pago_por_nome_valor(
         pool,
-        txid=txid,
-        valor_recebido=(pix.valor or pix.amount) if pix else payload.valor,
-        data_pagamento_str=(pix.horario or pix.dataHora or "") if pix else (payload.horario or ""),
+        nome_pagador=nome_pagador,
+        valor_pago=float(valor),
+        data_pagamento_str=data_pgto,
         origem="PIX",
+        slip_id=txid,
     )
