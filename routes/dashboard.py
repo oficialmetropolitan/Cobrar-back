@@ -9,31 +9,17 @@ async def resumo_geral():
     pool = get_pool()
 
     total = await pool.fetchrow("""
-WITH resumo_parcelas AS (
-    -- Agrupamos as parcelas primeiro para não duplicar os contratos no JOIN
-    SELECT 
-        contrato_id,
-        SUM(valor_pago) AS total_recebido
-    FROM parcelas
-    WHERE status = 'pago'
-    GROUP BY contrato_id
-)
-SELECT
-    COUNT(DISTINCT c.id) AS total_clientes,
-    COUNT(DISTINCT ct.id) AS total_contratos,
-    SUM(ct.valor_enviado) AS capital_total_emprestado,
-    COALESCE(SUM(rp.total_recebido), 0) AS montante_total_recebido,
-    
-    COALESCE(SUM(ct.valor_parcela), 0) AS receita_mensal_esperada,
-   
-    COALESCE(SUM(ct.spread_total), 0) AS spread_total_carteira
-FROM clientes c
-JOIN contratos ct ON ct.cliente_id = c.id
-LEFT JOIN resumo_parcelas rp ON rp.contrato_id = ct.id
-WHERE c.status = 'ativo' AND ct.ativo = TRUE;
-""")
-
-
+    SELECT
+        COUNT(DISTINCT c.id) AS total_clientes,
+        COUNT(DISTINCT ct.id) AS total_contratos,
+        SUM(ct.valor_enviado) AS capital_total_emprestado,
+        (SELECT COALESCE(SUM(valor_pago), 0) FROM parcelas WHERE status = 'pago') AS montante_total_recebido,
+        COALESCE(SUM(ct.valor_parcela), 0) AS receita_mensal_esperada,
+        COALESCE(SUM(ct.spread_total), 0) AS spread_total_carteira
+    FROM clientes c
+    JOIN contratos ct ON ct.cliente_id = c.id
+    WHERE c.status = 'ativo' AND ct.ativo = TRUE;
+    """)
 
 
     status = await pool.fetch("""

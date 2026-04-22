@@ -71,7 +71,7 @@ async def _marcar_pago_por_nome_valor(
         JOIN clientes  c  ON c.id  = ct.cliente_id
         WHERE p.status IN ('pendente', 'atrasado')
           AND c.status = 'ativo'
-          AND UPPER(UNACCENT(c.nome)) = $1
+          AND UPPER(c.nome) = $1
           AND ABS(p.valor - $2) <= 0.05
         ORDER BY p.data_vencimento ASC
         LIMIT 1
