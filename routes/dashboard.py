@@ -109,6 +109,26 @@ async def vencimentos_proximos(dias: int = 7):
     return [dict(r) for r in rows]
 
 
+@router.get("/previsao-recebimentos")
+async def previsao_recebimentos():
+    """Soma do valor a receber (pendente/atrasado) nos próximos 90, 180, 1 ano e 2 anos."""
+    pool = get_pool()
+    row = await pool.fetchrow("""
+        SELECT 
+            COALESCE(SUM(p.valor) FILTER (WHERE p.data_vencimento BETWEEN CURRENT_DATE AND CURRENT_DATE + 90), 0) AS em_90_dias,
+            COALESCE(SUM(p.valor) FILTER (WHERE p.data_vencimento BETWEEN CURRENT_DATE AND CURRENT_DATE + 180), 0) AS em_180_dias,
+            COALESCE(SUM(p.valor) FILTER (WHERE p.data_vencimento BETWEEN CURRENT_DATE AND CURRENT_DATE + 365), 0) AS em_1_ano,
+            COALESCE(SUM(p.valor) FILTER (WHERE p.data_vencimento BETWEEN CURRENT_DATE AND CURRENT_DATE + 730), 0) AS em_2_anos
+        FROM parcelas p
+        JOIN contratos ct ON ct.id = p.contrato_id
+        JOIN clientes c ON c.id = ct.cliente_id
+        WHERE p.status IN ('pendente', 'atrasado') 
+          AND ct.ativo = TRUE
+          AND c.status = 'ativo'
+    """)
+    return dict(row)
+
+
 @router.get("/evolucao-mensal")
 async def evolucao_mensal(ano: int = None):
     pool = get_pool()
@@ -141,3 +161,70 @@ COALESCE(
     
     rows = await pool.fetch(query, ano)
     return [dict(r) for r in rows]
+
+@router.get("/relatorio-consolidado")
+async def relatorio_consolidado():
+    """
+    Retorna o Spread Pago consolidado (parcelas + adiantamentos),
+    separa as categorias e apresenta a soma do Adiantamento com o Resto do relatório.
+    """
+    pool = get_pool()
+
+    # 1. Spread pago nas parcelas
+    spread_parcelas = await pool.fetchrow("""
+        SELECT 
+            COALESCE(SUM(p.valor_pago - (ct.valor_enviado / p.total_parcelas)), 0) AS spread_pago
+        FROM parcelas p
+        JOIN contratos ct ON ct.id = p.contrato_id
+        WHERE p.status = 'pago' AND p.valor_pago IS NOT NULL
+    """)
+
+    # 2. Resumo de Adiantamentos (pagos e pendentes)
+    adiantamentos_rows = await pool.fetch("""
+        SELECT 
+            status,
+            COUNT(*) AS quantidade,
+            COALESCE(SUM(valor_enviado), 0) AS total_enviado,
+            COALESCE(SUM(valor_receber), 0) AS total_receber,
+            COALESCE(SUM(spread), 0) AS spread_adiantamento
+        FROM adiantamentos
+        GROUP BY status
+    """)
+
+    adiantamentos_pagos = {"quantidade": 0, "total_enviado": 0, "total_receber": 0, "spread_adiantamento": 0}
+    adiantamentos_pendentes = {"quantidade": 0, "total_enviado": 0, "total_receber": 0, "spread_adiantamento": 0}
+
+    for r in adiantamentos_rows:
+        if r["status"] == "pago":
+            adiantamentos_pagos = dict(r)
+        elif r["status"] == "pendente":
+            adiantamentos_pendentes = dict(r)
+
+    # 3. Resto do relatório (Capital total emprestado e Montante Recebido de Parcelas)
+    resto = await pool.fetchrow("""
+        SELECT
+            (SELECT COALESCE(SUM(valor_pago), 0) FROM parcelas WHERE status = 'pago') AS total_recebido_parcelas,
+            (SELECT COALESCE(SUM(valor_enviado), 0) FROM contratos WHERE ativo = TRUE) AS capital_emprestado_carteira
+    """)
+
+    # --- Lógica de Consolidação ---
+    
+    spread_pago_parcelas_val = float(spread_parcelas["spread_pago"])
+    spread_pago_adiantamentos_val = float(adiantamentos_pagos.get("spread_adiantamento", 0))
+
+    soma_spread_total = spread_pago_parcelas_val + spread_pago_adiantamentos_val
+    
+    total_receber_adiantamentos = float(adiantamentos_pendentes.get("total_receber", 0)) + float(adiantamentos_pagos.get("total_receber", 0))
+
+    return {
+        "categorias_separadas": {
+            "spread_pago_parcelas": spread_pago_parcelas_val,
+            "adiantamentos_pagos": adiantamentos_pagos,
+            "adiantamentos_pendentes": adiantamentos_pendentes,
+            "resto_relatorio": dict(resto)
+        },
+        "visualizacao_geral_consolidada": {
+            "soma_spread_pago_total": soma_spread_total,
+            "soma_adiantamentos_com_resto": total_receber_adiantamentos + float(resto["total_recebido_parcelas"])
+        }
+    }
