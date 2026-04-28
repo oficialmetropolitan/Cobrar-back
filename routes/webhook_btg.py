@@ -254,9 +254,14 @@ class WebhookPixPayload(BaseModel):
 
 @router.post("/webhook/btg/boleto")
 async def webhook_boleto(
+    request: Request,
     payload: WebhookBoletoPayload,
     x_btg_signature: Optional[str] = Header(default=None),
 ):
+    body_bytes = await request.body()
+    if not _verificar_assinatura(body_bytes, x_btg_signature):
+        logger.warning("Tentativa de webhook BOLETO com assinatura inválida!")
+        raise HTTPException(status_code=401, detail="Assinatura inválida")
     """
     Recebe notificações de boleto pago (bank-slips.paid).
     Busca a parcela pelo nome do pagador + valor — sem precisar de bankSlipId.
@@ -302,9 +307,14 @@ async def webhook_boleto(
 
 @router.post("/webhook/btg/pix")
 async def webhook_pix(
+    request: Request,
     payload: WebhookPixPayload,
     x_btg_signature: Optional[str] = Header(default=None),
 ):
+    body_bytes = await request.body()
+    if not _verificar_assinatura(body_bytes, x_btg_signature):
+        logger.warning("Tentativa de webhook PIX com assinatura inválida!")
+        raise HTTPException(status_code=401, detail="Assinatura inválida")
     """
     Recebe notificações de PIX Cobrança pago.
     Busca a parcela pelo nome do pagador + valor.
