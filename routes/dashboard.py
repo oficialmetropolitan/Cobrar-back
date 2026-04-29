@@ -86,19 +86,43 @@ async def resumo_por_modalidade():
     pool = get_pool()
 
     rows = await pool.fetch("""
-        SELECT
-            c.modalidade,
-            COUNT(DISTINCT c.id)                                            AS clientes,
-            COALESCE(SUM(ct.valor_enviado), 0)                             AS capital_emprestado,
-            COALESCE(SUM(ct.valor_parcela), 0)                             AS receita_mensal,
-            COUNT(p.id)    FILTER (WHERE p.status = 'atrasado')            AS parcelas_atrasadas,
-            COALESCE(SUM(p.valor) FILTER (WHERE p.status = 'atrasado'), 0) AS valor_em_atraso
-        FROM clientes c
-        JOIN contratos ct ON ct.cliente_id = c.id AND ct.ativo = TRUE
-        LEFT JOIN parcelas p ON p.contrato_id = ct.id
-        WHERE c.status = 'ativo'
-        GROUP BY c.modalidade
-        ORDER BY capital_emprestado DESC
+     WITH resumo_contratos AS (
+    -- Soma os contratos por modalidade sem duplicidade de parcelas
+    SELECT 
+        c.modalidade,
+        COUNT(DISTINCT c.id) AS total_clientes,
+        SUM(ct.valor_enviado) AS capital_emprestado,
+        SUM(ct.valor_parcela) AS receita_mensal
+    FROM clientes c
+    JOIN contratos ct ON ct.cliente_id = c.id
+    WHERE c.status = 'ativo' 
+      AND ct.ativo = TRUE
+    GROUP BY c.modalidade
+),
+resumo_parcelas AS (
+    -- Calcula a inadimplência por modalidade
+    SELECT 
+        c.modalidade,
+        COUNT(p.id) FILTER (WHERE p.status = 'atrasado') AS parcelas_atrasadas,
+        COALESCE(SUM(p.valor) FILTER (WHERE p.status = 'atrasado'), 0) AS valor_em_atraso
+    FROM clientes c
+    JOIN contratos ct ON ct.cliente_id = c.id
+    LEFT JOIN parcelas p ON p.contrato_id = ct.id
+    WHERE c.status = 'ativo' 
+      AND ct.ativo = TRUE
+    GROUP BY c.modalidade
+)
+-- Une os resultados de todas as modalidades
+SELECT 
+    rc.modalidade,
+    rc.total_clientes AS clientes,
+    rc.capital_emprestado,
+    rc.receita_mensal,
+    rp.parcelas_atrasadas,
+    rp.valor_em_atraso
+FROM resumo_contratos rc
+JOIN resumo_parcelas rp ON rc.modalidade = rp.modalidade
+ORDER BY rc.capital_emprestado DESC;
     """)
 
     return [dict(r) for r in rows]
