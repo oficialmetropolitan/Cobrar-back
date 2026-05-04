@@ -8,7 +8,7 @@ from database import create_pool, close_pool
 from security import get_api_key
 from routes import cliente, contrato, parcela, dashboard, Onboarding, adiantamento, extrairpdf
 from routes.webhook_btg import router as webhook_btg_router
-from scheduler import criar_scheduler, job_cobrancas
+from scheduler import criar_scheduler, job_cobrancas, job_verificar_pagamentos_btg
 
 
 
@@ -28,6 +28,10 @@ async def lifespan(app: FastAPI):
     job = scheduler.get_job("job_cobrancas")
     if job:
         logger.info(f"SISTEMA ONLINE: Próxima rotina de cobrança agendada para: {job.next_run_time}")
+    
+    job_btg = scheduler.get_job("job_pagamentos_btg")
+    if job_btg:
+        logger.info(f"SISTEMA ONLINE: Monitor BTG 24h ativo — próxima verificação: {job_btg.next_run_time}")
     
     yield
     
@@ -68,10 +72,21 @@ app.include_router(webhook_btg_router, prefix="", tags=["Webhook BTG"])
 
 @app.get("/", tags=["Health"])
 async def root():
-    return {"status": "ok", "proximo_disparo": str(scheduler.get_job("job_cobrancas").next_run_time)}
+    job_cob = scheduler.get_job("job_cobrancas")
+    job_btg = scheduler.get_job("job_pagamentos_btg")
+    return {
+        "status": "ok",
+        "proximo_cobranca": str(job_cob.next_run_time) if job_cob else None,
+        "proximo_btg_check": str(job_btg.next_run_time) if job_btg else None,
+    }
 
 @app.post("/admin/disparar-cobrancas", tags=["Admin"], dependencies=[Depends(get_api_key)])
 async def disparar_cobrancas_manual():
-    # Executa a função imediatamente sem esperar as 08:00
     await job_cobrancas()
     return {"mensagem": "Job disparado manualmente com sucesso!"}
+
+@app.post("/admin/verificar-pagamentos-btg", tags=["Admin"], dependencies=[Depends(get_api_key)])
+async def verificar_pagamentos_btg_manual():
+    """Dispara verificação de pagamentos BTG manualmente."""
+    await job_verificar_pagamentos_btg()
+    return {"mensagem": "Verificação de pagamentos BTG executada!"}

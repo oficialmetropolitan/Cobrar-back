@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from database import get_pool
 
 import unicodedata
@@ -295,12 +296,101 @@ async def _notificar_pagamento_email(parcelas_pagas: list):
         logger.error(f"Falha ao notificar pagamentos: {e}")
  
  
-# ─── JOB 1: Verificar boletos pagos (roda a cada hora) ────────────────────────
+# ─── Helpers de matching ───────────────────────────────────────────────────────
+
+def _limpar_cpf(cpf: str) -> str:
+    """Remove pontos, traços e espaços do CPF/CNPJ."""
+    return "".join(filter(str.isdigit, cpf or ""))
+
+
+async def _buscar_parcela_por_nome_cpf(conn, nome: str, cpf: str, valor: float):
+    """
+    Busca parcela pendente/atrasada em 3 etapas:
+      1º — CPF/CNPJ do pagador + valor (mais confiável)
+      2º — Nome normalizado + valor (fallback)
+      3º — Nome com LIKE parcial + valor (fallback mais flexível)
+    Retorna dict da parcela ou None.
+    """
+    cpf_limpo = _limpar_cpf(cpf)
+    nome_norm = _normalizar(nome)
+
+    # ── 1º: Busca por CPF/CNPJ (mais preciso) ──
+    if cpf_limpo:
+        row = await conn.fetchrow(
+            """
+            SELECT p.id, p.status, p.valor, c.nome, c.telefone, c.cpf_cnpj
+            FROM parcelas p
+            JOIN contratos ct ON ct.id = p.contrato_id
+            JOIN clientes  c  ON c.id  = ct.cliente_id
+            WHERE p.status IN ('pendente', 'atrasado')
+              AND c.status = 'ativo'
+              AND REPLACE(REPLACE(REPLACE(c.cpf_cnpj, '.', ''), '-', ''), '/', '') = $1
+              AND ABS(p.valor - $2) <= 0.05
+            ORDER BY p.data_vencimento ASC
+            LIMIT 1
+            """,
+            cpf_limpo,
+            valor,
+        )
+        if row:
+            logger.info(f"  🔍 Match por CPF: {cpf_limpo}")
+            return dict(row)
+
+    # ── 2º: Busca por nome exato normalizado ──
+    if nome_norm:
+        row = await conn.fetchrow(
+            """
+            SELECT p.id, p.status, p.valor, c.nome, c.telefone, c.cpf_cnpj
+            FROM parcelas p
+            JOIN contratos ct ON ct.id = p.contrato_id
+            JOIN clientes  c  ON c.id  = ct.cliente_id
+            WHERE p.status IN ('pendente', 'atrasado')
+              AND c.status = 'ativo'
+              AND UPPER(c.nome) = $1
+              AND ABS(p.valor - $2) <= 0.05
+            ORDER BY p.data_vencimento ASC
+            LIMIT 1
+            """,
+            nome_norm,
+            valor,
+        )
+        if row:
+            logger.info(f"  🔍 Match por nome exato: {nome_norm}")
+            return dict(row)
+
+    # ── 3º: Busca por nome parcial (LIKE) ──
+    if nome_norm and len(nome_norm) >= 5:
+        row = await conn.fetchrow(
+            """
+            SELECT p.id, p.status, p.valor, c.nome, c.telefone, c.cpf_cnpj
+            FROM parcelas p
+            JOIN contratos ct ON ct.id = p.contrato_id
+            JOIN clientes  c  ON c.id  = ct.cliente_id
+            WHERE p.status IN ('pendente', 'atrasado')
+              AND c.status = 'ativo'
+              AND UPPER(c.nome) LIKE '%' || $1 || '%'
+              AND ABS(p.valor - $2) <= 0.05
+            ORDER BY p.data_vencimento ASC
+            LIMIT 1
+            """,
+            nome_norm,
+            valor,
+        )
+        if row:
+            logger.info(f"  🔍 Match por nome parcial: {nome_norm}")
+            return dict(row)
+
+    return None
+
+
+# ─── JOB 1: Verificar boletos pagos (roda a cada 30 min, 24h) ─────────────────
  
 async def job_verificar_pagamentos_btg():
     """
     Verifica boletos pagos no BTG e marca as parcelas correspondentes como pagas.
-    Roda a cada hora.
+    Busca por: 1) bankSlipId na observação  2) CPF/CNPJ  3) Nome do pagador.
+    Usa tabela boletos_processados para não reprocessar boletos já marcados.
+    Roda a cada 30 minutos, 24h por dia.
     """
     logger.info("=== BTG: Verificando pagamentos ===")
  
@@ -324,40 +414,82 @@ async def job_verificar_pagamentos_btg():
     ]
  
     if not boletos_pagos:
-        logger.info(f"BTG: {len(boletos)} boleto(s) verificado(s), nenhum pago novo")
+        logger.info(f"BTG: {len(boletos)} boleto(s) verificado(s), nenhum pago")
         return
  
     logger.info(f"BTG: {len(boletos_pagos)} boleto(s) pago(s) encontrado(s)")
  
     pool = get_pool()
     parcelas_pagas = []
+    nao_encontrados = []
+    ja_processados = 0
  
     for boleto in boletos_pagos:
         slip_id  = boleto.get("bankSlipId") or boleto.get("correlationId") or ""
         paid_at  = boleto.get("paidAt") or boleto.get("settledAt") or ""
-        amount   = boleto.get("amount", 0)
- 
-        if not slip_id:
+        amount   = float(boleto.get("amount", 0))
+        payer    = boleto.get("payer") or {}
+        nome     = payer.get("name", "")
+        cpf      = payer.get("taxId") or payer.get("document") or payer.get("cpf") or ""
+
+        if not amount:
             continue
+
+        # ── Deduplicação: verifica se já processamos esse boleto ──
+        if slip_id:
+            async with pool.acquire() as conn:
+                existe = await conn.fetchval(
+                    "SELECT 1 FROM boletos_processados WHERE bank_slip_id = $1",
+                    slip_id,
+                )
+                if existe:
+                    ja_processados += 1
+                    continue
  
         async with pool.acquire() as conn:
-            parcela = await conn.fetchrow(
-                """
-                SELECT p.id, p.status, p.valor, c.nome, c.telefone
-                FROM parcelas p
-                JOIN contratos ct ON ct.id = p.contrato_id
-                JOIN clientes  c  ON c.id  = ct.cliente_id
-                WHERE p.observacao ILIKE $1
-                LIMIT 1
-                """,
-                f"%{slip_id}%",
-            )
- 
+            parcela = None
+
+            # ── Etapa 1: Tenta pelo bankSlipId já vinculado na observação ──
+            if slip_id:
+                parcela_row = await conn.fetchrow(
+                    """
+                    SELECT p.id, p.status, p.valor, c.nome, c.telefone, c.cpf_cnpj
+                    FROM parcelas p
+                    JOIN contratos ct ON ct.id = p.contrato_id
+                    JOIN clientes  c  ON c.id  = ct.cliente_id
+                    WHERE p.observacao ILIKE $1
+                      AND p.status IN ('pendente', 'atrasado')
+                    LIMIT 1
+                    """,
+                    f"%{slip_id}%",
+                )
+                if parcela_row:
+                    parcela = dict(parcela_row)
+                    logger.info(f"  🔍 Match por bankSlipId: {slip_id}")
+
+            # ── Etapa 2: Busca por CPF → Nome (se não achou pelo slip_id) ──
             if not parcela:
+                parcela = await _buscar_parcela_por_nome_cpf(conn, nome, cpf, amount)
+
+            # ── Não encontrou de jeito nenhum ──
+            if not parcela:
+                nao_encontrados.append(f"{nome} | CPF: {cpf} | R$ {amount:.2f}")
                 continue
  
             if parcela["status"] == "pago":
-                continue  # já estava pago
+                # Registra como processado mesmo que já estivesse pago
+                if slip_id:
+                    try:
+                        await conn.execute(
+                            """INSERT INTO boletos_processados
+                               (bank_slip_id, parcela_id, valor, nome_pagador, cpf_pagador, data_pagamento)
+                               VALUES ($1, $2, $3, $4, $5, $6)
+                               ON CONFLICT (bank_slip_id) DO NOTHING""",
+                            slip_id, parcela["id"], amount, nome, cpf, date.today(),
+                        )
+                    except Exception:
+                        pass
+                continue
  
             # Data de pagamento
             data_pgto = date.today()
@@ -367,8 +499,13 @@ async def job_verificar_pagamentos_btg():
                 except Exception:
                     pass
  
-            valor_pago = float(amount) if amount else float(parcela["valor"])
+            valor_pago = amount if amount else float(parcela["valor"])
+
+            obs = f"Pago via Boleto BTG | bankSlipId: {slip_id}"
+            if cpf:
+                obs += f" | CPF: {cpf}"
  
+            # ── Marcar parcela como PAGA ──
             await conn.execute(
                 """
                 UPDATE parcelas
@@ -381,24 +518,45 @@ async def job_verificar_pagamentos_btg():
                 parcela["id"],
                 data_pgto,
                 valor_pago,
-                f"Pago via Boleto BTG | bankSlipId: {slip_id}",
+                obs,
             )
  
             logger.info(f"✅ Parcela {parcela['id']} ({parcela['nome']}) marcada como PAGA — R$ {valor_pago:.2f}")
+
+            # ── Registrar boleto como processado (deduplicação) ──
+            if slip_id:
+                try:
+                    await conn.execute(
+                        """INSERT INTO boletos_processados
+                           (bank_slip_id, parcela_id, valor, nome_pagador, cpf_pagador, data_pagamento)
+                           VALUES ($1, $2, $3, $4, $5, $6)
+                           ON CONFLICT (bank_slip_id) DO NOTHING""",
+                        slip_id, parcela["id"], valor_pago, nome, cpf, data_pgto,
+                    )
+                except Exception as e:
+                    logger.warning(f"Erro ao registrar boleto processado: {e}")
  
             parcelas_pagas.append({
                 "parcela_id":    parcela["id"],
                 "nome":          parcela["nome"],
-                "telefone":      parcela["telefone"],
+                "telefone":      parcela.get("telefone", ""),
                 "valor":         valor_pago,
                 "data_pagamento": str(data_pgto),
             })
  
     if parcelas_pagas:
         await _notificar_pagamento_email(parcelas_pagas)
-        logger.info(f"=== BTG: {len(parcelas_pagas)} parcela(s) marcada(s) como pagas ===")
+        logger.info(f"=== BTG: {len(parcelas_pagas)} parcela(s) marcada(s) como PAGA(s)! ===")
     else:
         logger.info("=== BTG: nenhuma parcela nova marcada como paga ===")
+
+    if ja_processados:
+        logger.info(f"ℹ️  {ja_processados} boleto(s) já processado(s) anteriormente (pulados)")
+
+    if nao_encontrados:
+        logger.warning(f"⚠️  {len(nao_encontrados)} boleto(s) pago(s) sem parcela correspondente:")
+        for item in nao_encontrados:
+            logger.warning(f"     → {item}")
  
  
 # ─── JOB 2: Vincular boletos às parcelas (roda todo dia às 7h) ────────────────
@@ -498,8 +656,9 @@ def criar_scheduler() -> AsyncIOScheduler:
 )
     scheduler.add_job(
         job_verificar_pagamentos_btg,
-        trigger=CronTrigger(minute=0),  # toda hora
+        trigger=IntervalTrigger(minutes=30),  # a cada 30 min, 24h
         id="job_pagamentos_btg",
+        name="Verificar pagamentos BTG (24h)",
         replace_existing=True,
     )
     return scheduler

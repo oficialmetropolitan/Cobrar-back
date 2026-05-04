@@ -288,7 +288,7 @@ async def relatorio_consolidado():
     total_recebido_adiant    = float(adiant_pagos.get("total_receber", 0))
     # Total já entrou no caixa: parcelas pagas + adiantamentos recebidos
     total_recebido_geral     = total_recebido_parcelas + total_recebido_adiant
-
+    
     # Total ainda a receber: parcelas pendentes/atrasadas + adiantamentos pendentes
     total_recebivel_parcelas = float(await pool.fetchval("""
         SELECT COALESCE(SUM(valor), 0)
