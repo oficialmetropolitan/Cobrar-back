@@ -210,7 +210,9 @@ async def evolucao_mensal(ano: int = None):
             COALESCE(SUM(
                 CASE
                     WHEN p.status = 'pago' AND p.valor_pago IS NOT NULL
-                    THEN p.valor_pago - (ct.valor_enviado / p.total_parcelas)
+                    -- Se pagou o valor cheio, spread é o esperado
+                    -- Se pagou diferente, spread proporcional ao que entrou
+                    THEN (p.valor_pago / NULLIF(ct.valor_parcela, 0)) * ct.spread_por_parcela
                     ELSE 0
                 END
             ), 0)                                                       AS spread_realizado,
