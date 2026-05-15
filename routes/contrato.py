@@ -83,6 +83,10 @@ async def atualizar_contrato(contrato_id: int, payload: ContratoUpdate):
     if not data:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
 
+    # ✅ Converte data_inicio string para date puro antes do SQL
+    if "data_inicio" in data and isinstance(data["data_inicio"], str):
+        data["data_inicio"] = _para_date_puro(data["data_inicio"])
+
     CAMPOS_QUE_REGENERAM = {"valor_parcela", "num_parcelas", "data_inicio", "spread_por_parcela"}
     deve_regenerar = bool(CAMPOS_QUE_REGENERAM & set(data.keys()))
     parcelas_criadas = 0
