@@ -13,19 +13,22 @@ async def resumo_geral():
     pool = get_pool()
 
     carteira = await pool.fetchrow("""
-        SELECT
-            COUNT(DISTINCT c.id)                                        AS total_clientes,
-            COUNT(DISTINCT ct.id)                                       AS total_contratos,
-            COALESCE(SUM(ct.valor_enviado), 0)                         AS capital_total_emprestado,
-            (SELECT COALESCE(SUM(valor_pago), 0)
-               FROM parcelas WHERE status = 'pago')                    AS montante_total_recebido,
-            COALESCE(SUM(ct.valor_parcela), 0)                         AS receita_mensal_esperada,
-            COALESCE(SUM(ct.spread_total), 0)                          AS spread_total_carteira
-        FROM clientes c
-        JOIN contratos ct ON ct.cliente_id = c.id
-        WHERE c.status = 'ativo' AND ct.ativo = TRUE
-    """)
-
+    SELECT
+        COUNT(DISTINCT c.id)                                        AS total_clientes,
+        COUNT(DISTINCT ct.id)                                       AS total_contratos,
+        COALESCE(SUM(ct.valor_enviado), 0)                         AS capital_total_emprestado,
+        (SELECT COALESCE(SUM(valor_pago), 0)
+           FROM parcelas WHERE status = 'pago')                    AS montante_total_recebido,
+        COALESCE(SUM(ct.valor_parcela), 0)                         AS receita_mensal_esperada,
+        COALESCE(SUM(ct.spread_total), 0)                          AS spread_total_carteira,
+        -- Médias de juros ↓
+        ROUND(AVG(ct.taxa_mensal)::numeric, 6)                     AS taxa_media_carteira,
+        ROUND(MIN(ct.taxa_mensal)::numeric, 6)                     AS taxa_minima,
+        ROUND(MAX(ct.taxa_mensal)::numeric, 6)                     AS taxa_maxima
+    FROM clientes c
+    JOIN contratos ct ON ct.cliente_id = c.id
+    WHERE c.status = 'ativo' AND ct.ativo = TRUE
+""")
     parcelas_por_status = await pool.fetch("""
         SELECT
             status,
@@ -87,12 +90,15 @@ async def resumo_por_modalidade():
 
     rows = await pool.fetch("""
      WITH resumo_contratos AS (
-    -- Soma os contratos por modalidade sem duplicidade de parcelas
     SELECT 
         c.modalidade,
-        COUNT(DISTINCT c.id) AS total_clientes,
-        SUM(ct.valor_enviado) AS capital_emprestado,
-        SUM(ct.valor_parcela) AS receita_mensal
+        COUNT(DISTINCT c.id)                        AS total_clientes,
+        SUM(ct.valor_enviado)                       AS capital_emprestado,
+        SUM(ct.valor_parcela)                       AS receita_mensal,
+        -- Médias de juros por modalidade ↓
+        ROUND(AVG(ct.taxa_mensal)::numeric, 6)      AS taxa_media,
+        ROUND(MIN(ct.taxa_mensal)::numeric, 6)      AS taxa_minima,
+        ROUND(MAX(ct.taxa_mensal)::numeric, 6)      AS taxa_maxima
     FROM clientes c
     JOIN contratos ct ON ct.cliente_id = c.id
     WHERE c.status = 'ativo' 
@@ -115,9 +121,12 @@ resumo_parcelas AS (
 -- Une os resultados de todas as modalidades
 SELECT 
     rc.modalidade,
-    rc.total_clientes AS clientes,
+    rc.total_clientes       AS clientes,
     rc.capital_emprestado,
     rc.receita_mensal,
+    rc.taxa_media,           -- ← novo
+    rc.taxa_minima,          -- ← novo
+    rc.taxa_maxima,          -- ← novo
     rp.parcelas_atrasadas,
     rp.valor_em_atraso
 FROM resumo_contratos rc
