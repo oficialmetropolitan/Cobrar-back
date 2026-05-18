@@ -199,6 +199,36 @@ async def previsao_recebimentos():
 
     return dict(row)
 
+@router.get("/evolucao-mensal-por-modalidade")
+async def evolucao_mensal_por_modalidade(ano: int = None):
+    pool = get_pool()
+
+    rows = await pool.fetch("""
+        SELECT
+            c.modalidade,
+            p.mes_referencia                                                AS mes,
+            COALESCE(SUM(p.valor), 0)                                      AS montante_mensal,
+            COALESCE(SUM(
+                CASE WHEN p.numero_parcela = 1 THEN ct.valor_enviado ELSE 0 END
+            ), 0)                                                           AS capital_desembolsado,
+            COALESCE(SUM(
+                CASE
+                    WHEN p.status = 'pago' AND p.valor_pago IS NOT NULL
+                    THEN (p.valor_pago / NULLIF(ct.valor_parcela, 0)) * ct.spread_por_parcela
+                    ELSE 0
+                END
+            ), 0)                                                           AS spread_realizado,
+            COALESCE(SUM(p.valor) FILTER (WHERE p.status = 'atrasado'), 0) AS inadimplencia_mensal
+        FROM parcelas p
+        JOIN contratos ct ON ct.id = p.contrato_id
+        JOIN clientes  c  ON c.id  = ct.cliente_id
+        WHERE ($1::int IS NULL OR EXTRACT(YEAR FROM p.data_vencimento) = $1)
+        GROUP BY c.modalidade, p.mes_referencia
+        ORDER BY p.mes_referencia ASC, c.modalidade
+    """, ano)
+
+    return [dict(r) for r in rows]
+
 
 @router.get("/evolucao-mensal")
 async def evolucao_mensal(ano: int = None):
