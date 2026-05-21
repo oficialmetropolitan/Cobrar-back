@@ -1,4 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from datetime import date
+from dateutil.relativedelta import relativedelta
 from database import get_pool
 
 router = APIRouter()
@@ -354,5 +356,115 @@ async def relatorio_consolidado():
             "total_recebivel":           total_recebivel,
             "total_recebivel_parcelas":  total_recebivel_parcelas,
             "total_recebivel_adiant":    total_recebivel_adiant,
+        },
+    }
+
+
+@router.get("/comparacao-periodos")
+async def comparacao_periodos(
+    mes_base: str = None,
+    comparar_com: str = "mes_anterior",
+):
+    """
+    Compara métricas entre dois meses com variação percentual.
+
+    - mes_base: YYYY-MM (padrão: mês atual)
+    - comparar_com: "mes_anterior" (padrão) ou "ano_anterior"
+    """
+    if comparar_com not in ("mes_anterior", "ano_anterior"):
+        raise HTTPException(400, "comparar_com deve ser 'mes_anterior' ou 'ano_anterior'")
+
+    hoje = date.today()
+    if mes_base:
+        try:
+            ref = date.fromisoformat(mes_base + "-01")
+        except ValueError:
+            raise HTTPException(400, "mes_base deve estar no formato YYYY-MM")
+    else:
+        ref = hoje.replace(day=1)
+
+    mes_base_str = ref.strftime("%Y-%m")
+    ref_comp = ref - (relativedelta(years=1) if comparar_com == "ano_anterior" else relativedelta(months=1))
+    mes_comp_str = ref_comp.strftime("%Y-%m")
+
+    pool = get_pool()
+
+    row = await pool.fetchrow("""
+        SELECT
+            -- Montante previsto (soma de todas as parcelas no período)
+            COALESCE(SUM(p.valor) FILTER (
+                WHERE TRIM(p.mes_referencia::text) = $1), 0)                   AS montante_base,
+            COALESCE(SUM(p.valor) FILTER (
+                WHERE TRIM(p.mes_referencia::text) = $2), 0)                   AS montante_comp,
+
+            -- Total efetivamente recebido (parcelas pagas)
+            COALESCE(SUM(p.valor_pago) FILTER (
+                WHERE TRIM(p.mes_referencia::text) = $1
+                  AND p.status = 'pago'), 0)                                   AS recebido_base,
+            COALESCE(SUM(p.valor_pago) FILTER (
+                WHERE TRIM(p.mes_referencia::text) = $2
+                  AND p.status = 'pago'), 0)                                   AS recebido_comp,
+
+            -- Spread realizado nas parcelas pagas
+            COALESCE(SUM(CASE
+                WHEN TRIM(p.mes_referencia::text) = $1
+                 AND p.status = 'pago' AND p.valor_pago IS NOT NULL
+                THEN (p.valor_pago / NULLIF(ct.valor_parcela, 0)) * ct.spread_por_parcela
+                ELSE 0 END), 0)                                                AS spread_base,
+            COALESCE(SUM(CASE
+                WHEN TRIM(p.mes_referencia::text) = $2
+                 AND p.status = 'pago' AND p.valor_pago IS NOT NULL
+                THEN (p.valor_pago / NULLIF(ct.valor_parcela, 0)) * ct.spread_por_parcela
+                ELSE 0 END), 0)                                                AS spread_comp,
+
+            -- Inadimplência (parcelas atrasadas)
+            COALESCE(SUM(p.valor) FILTER (
+                WHERE TRIM(p.mes_referencia::text) = $1
+                  AND p.status = 'atrasado'), 0)                               AS inadimplencia_base,
+            COALESCE(SUM(p.valor) FILTER (
+                WHERE TRIM(p.mes_referencia::text) = $2
+                  AND p.status = 'atrasado'), 0)                               AS inadimplencia_comp,
+
+            -- Quantidade de parcelas pagas
+            COUNT(p.id) FILTER (
+                WHERE TRIM(p.mes_referencia::text) = $1
+                  AND p.status = 'pago')                                       AS pagas_base,
+            COUNT(p.id) FILTER (
+                WHERE TRIM(p.mes_referencia::text) = $2
+                  AND p.status = 'pago')                                       AS pagas_comp,
+
+            -- Capital desembolsado (novos contratos: 1ª parcela)
+            COALESCE(SUM(ct.valor_enviado) FILTER (
+                WHERE TRIM(p.mes_referencia::text) = $1
+                  AND p.numero_parcela = 1), 0)                                AS capital_base,
+            COALESCE(SUM(ct.valor_enviado) FILTER (
+                WHERE TRIM(p.mes_referencia::text) = $2
+                  AND p.numero_parcela = 1), 0)                                AS capital_comp
+        FROM parcelas p
+        JOIN contratos ct ON ct.id = p.contrato_id
+        WHERE TRIM(p.mes_referencia::text) IN ($1, $2)
+    """, mes_base_str, mes_comp_str)
+
+    def _variacao(base, comp):
+        b, c = float(base), float(comp)
+        pct = round(((b - c) / c) * 100, 2) if c != 0 else None
+        return {
+            "periodo_base":        round(b, 2),
+            "periodo_comparacao":  round(c, 2),
+            "variacao_absoluta":   round(b - c, 2),
+            "variacao_percentual": pct,
+        }
+
+    return {
+        "periodo_base":       mes_base_str,
+        "periodo_comparacao": mes_comp_str,
+        "tipo_comparacao":    comparar_com,
+        "metricas": {
+            "montante_previsto":    _variacao(row["montante_base"],    row["montante_comp"]),
+            "total_recebido":       _variacao(row["recebido_base"],    row["recebido_comp"]),
+            "spread_realizado":     _variacao(row["spread_base"],      row["spread_comp"]),
+            "inadimplencia":        _variacao(row["inadimplencia_base"], row["inadimplencia_comp"]),
+            "parcelas_pagas":       _variacao(row["pagas_base"],       row["pagas_comp"]),
+            "capital_desembolsado": _variacao(row["capital_base"],     row["capital_comp"]),
         },
     }
