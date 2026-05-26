@@ -283,7 +283,7 @@ async def relatorio_consolidado():
     spread_parcelas = await pool.fetchrow("""
         SELECT
             COALESCE(SUM(
-                p.valor_pago - (ct.valor_enviado / p.total_parcelas)
+                (p.valor_pago / NULLIF(ct.valor_parcela, 0)) * ct.spread_por_parcela
             ), 0) AS spread_realizado
         FROM parcelas p
         JOIN contratos ct ON ct.id = p.contrato_id

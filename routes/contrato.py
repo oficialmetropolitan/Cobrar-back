@@ -135,7 +135,8 @@ async def atualizar_contrato(contrato_id: int, payload: ContratoUpdate):
                     vencimento_base = data_base + relativedelta(months=i + 1)
                     # ✅ Constrói date puro com date() — nunca usa .replace() em datetime
                     data_vencimento = date(vencimento_base.year, vencimento_base.month, dia_vencimento)
-                    mes_referencia  = data_vencimento.strftime("%Y-%m")
+                    mes_ref_date    = data_vencimento - relativedelta(months=1)
+                    mes_referencia  = mes_ref_date.strftime("%Y-%m")
                     status          = "atrasado" if data_vencimento < date.today() else "pendente"
 
                     await conn.execute(

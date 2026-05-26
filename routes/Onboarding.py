@@ -81,14 +81,13 @@ async def onboarding(payload: OnboardingIn):
             )
 
             # 3. Gera as parcelas
-            # Lógica: cliente paga no mês anterior ao de referência
-            # Ex: vence em 10/09 → referência 2025-10 (pagou adiantado para outubro)
+            # mes_referencia = mês anterior ao vencimento
+            # Ex: vence em 10/09 → referência 2025-08
             parcelas = []
             for i in range(payload.num_parcelas):
                 vencimento_base = data_inicio + relativedelta(months=i + 1)
                 data_vencimento = vencimento_base.replace(day=payload.dia_vencimento)
 
-                # Referência é sempre 1 mês à frente do vencimento
                 mes_ref_date = data_vencimento - relativedelta(months=1)
                 mes_referencia = mes_ref_date.strftime("%Y-%m")
 

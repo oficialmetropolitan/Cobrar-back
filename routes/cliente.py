@@ -277,7 +277,8 @@ async def onboarding(payload: OnboardingIn):
                 vencimento_base = data_inicio + relativedelta(months=i + 1)
                 # ✅ Constrói date puro — sem timezone
                 data_vencimento = date(vencimento_base.year, vencimento_base.month, payload.dia_vencimento)
-                mes_referencia  = data_vencimento.strftime("%Y-%m")
+                mes_ref_date    = data_vencimento - relativedelta(months=1)
+                mes_referencia  = mes_ref_date.strftime("%Y-%m")
 
                 parcela = await conn.fetchrow(
                     """
