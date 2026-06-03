@@ -30,6 +30,20 @@ async def _ensure_tables(pool: asyncpg.Pool):
         """)
         logger.info("✅ Tabela boletos_processados verificada/criada")
 
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS adiantamentos (
+                id SERIAL PRIMARY KEY,
+                nota_fiscal VARCHAR(255) NOT NULL,
+                status VARCHAR(50) NOT NULL DEFAULT 'pendente',
+                valor_enviado NUMERIC(12,2) NOT NULL,
+                valor_receber NUMERIC(12,2) NOT NULL,
+                spread NUMERIC(12,2) NOT NULL,
+                data_enviada DATE NOT NULL,
+                data_receber DATE NOT NULL
+            );
+        """)
+        logger.info("✅ Tabela adiantamentos verificada/criada")
+
 
 async def create_pool():
     global _pool
