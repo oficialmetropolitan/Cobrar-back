@@ -109,20 +109,17 @@ async def criar_adiantamento(payload: AdiantamentoIn):
 
     data_enviada = payload.data_enviada or date.today()
 
-    spread = payload.valor_receber - payload.valor_enviado
-
     row = await pool.fetchrow(
         """
         INSERT INTO adiantamentos
-            (nota_fiscal, status, valor_enviado, valor_receber, spread, data_enviada, data_receber)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (nota_fiscal, status, valor_enviado, valor_receber, data_enviada, data_receber)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING *
         """,
         payload.nota_fiscal,
         payload.status,
         payload.valor_enviado,
         payload.valor_receber,
-        spread,
         data_enviada,
         payload.data_receber,
     )
@@ -138,17 +135,6 @@ async def atualizar_adiantamento(adiantamento_id: int, payload: AdiantamentoUpda
         raise HTTPException(400, "Nenhum campo para atualizar")
     if "status" in data and data["status"] not in ("pendente", "recebido", "cancelado"):
         raise HTTPException(400, "Status inválido")
-
-    # Se mudou valor_enviado ou valor_receber, recalcula o spread buscando os valores atuais
-    if "valor_enviado" in data or "valor_receber" in data:
-        atual = await pool.fetchrow(
-            "SELECT valor_enviado, valor_receber FROM adiantamentos WHERE id = $1", adiantamento_id
-        )
-        if not atual:
-            raise HTTPException(404, "Adiantamento não encontrado")
-        enviado  = data.get("valor_enviado",  atual["valor_enviado"])
-        receber  = data.get("valor_receber",  atual["valor_receber"])
-        data["spread"] = receber - enviado
 
     sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(data.keys()))
     row = await pool.fetchrow(

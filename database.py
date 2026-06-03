@@ -37,7 +37,7 @@ async def _ensure_tables(pool: asyncpg.Pool):
                 status VARCHAR(50) NOT NULL DEFAULT 'pendente',
                 valor_enviado NUMERIC(12,2) NOT NULL,
                 valor_receber NUMERIC(12,2) NOT NULL,
-                spread NUMERIC(12,2) NOT NULL,
+                spread NUMERIC(12,2) GENERATED ALWAYS AS (valor_receber - valor_enviado) STORED,
                 data_enviada DATE NOT NULL,
                 data_receber DATE NOT NULL
             );
