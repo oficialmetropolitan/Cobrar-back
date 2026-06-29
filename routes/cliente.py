@@ -53,6 +53,54 @@ async def listar_clientes(
     return [dict(r) for r in rows]
 
 
+@router.get("/inadimplentes")
+async def listar_inadimplentes(
+    modalidade: Optional[str] = None,
+    dias_minimos: Optional[int] = None,
+):
+    pool = get_pool()
+    where_conds = [
+        "(p.status = 'atrasado' OR (p.status = 'pendente' AND p.data_vencimento < CURRENT_DATE))"
+    ]
+    having_conds = []
+    args = []
+
+    if modalidade:
+        args.append(modalidade)
+        where_conds.append(f"c.modalidade ILIKE ${len(args)}")
+
+    if dias_minimos is not None:
+        args.append(dias_minimos)
+        having_conds.append(f"(CURRENT_DATE - MIN(p.data_vencimento)) >= ${len(args)}")
+
+    where = " AND ".join(where_conds)
+    having = f"HAVING {' AND '.join(having_conds)}" if having_conds else ""
+
+    query = f"""
+        SELECT
+            c.id AS cliente_id,
+            c.nome,
+            c.modalidade,
+            c.telefone,
+            c.email,
+            c.cpf_cnpj,
+            COUNT(p.id)             AS qtd_parcelas_atrasadas,
+            SUM(p.valor)            AS total_devido,
+            MIN(p.data_vencimento)  AS primeira_parcela_em_atraso,
+            (CURRENT_DATE - MIN(p.data_vencimento)) AS dias_em_atraso
+        FROM parcelas p
+        JOIN contratos ct ON ct.id = p.contrato_id
+        JOIN clientes c  ON c.id  = ct.cliente_id
+        WHERE {where}
+        GROUP BY c.id, c.nome, c.modalidade, c.telefone, c.email, c.cpf_cnpj
+        {having}
+        ORDER BY dias_em_atraso DESC, total_devido DESC
+    """
+
+    rows = await pool.fetch(query, *args)
+    return [dict(r) for r in rows]
+
+
 @router.get("/{cliente_id}", response_model=ClienteOut)
 async def buscar_cliente(cliente_id: int):
     pool = get_pool()
