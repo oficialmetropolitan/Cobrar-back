@@ -84,15 +84,17 @@ async def listar_inadimplentes(
             c.telefone,
             c.email,
             c.cpf_cnpj,
+             c.status, 
             COUNT(p.id)             AS qtd_parcelas_atrasadas,
             SUM(p.valor)            AS total_devido,
             MIN(p.data_vencimento)  AS primeira_parcela_em_atraso,
             (CURRENT_DATE - MIN(p.data_vencimento)) AS dias_em_atraso
+           
         FROM parcelas p
         JOIN contratos ct ON ct.id = p.contrato_id
         JOIN clientes c  ON c.id  = ct.cliente_id
         WHERE {where}
-        GROUP BY c.id, c.nome, c.modalidade, c.telefone, c.email, c.cpf_cnpj
+        GROUP BY c.id, c.nome, c.modalidade, c.telefone, c.email, c.cpf_cnpj, c.status
         {having}
         ORDER BY dias_em_atraso DESC, total_devido DESC
     """
