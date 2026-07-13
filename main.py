@@ -40,9 +40,15 @@ async def lifespan(app: FastAPI):
     await close_pool()
     logger.info("SISTEMA OFFLINE: Agendador desligado.")
 
+# Em produção, desativa a documentação (Swagger, ReDoc e o schema OpenAPI)
+IS_PRODUCTION = os.getenv("ENVIRONMENT", "development").strip().lower() == "production"
+
 app = FastAPI(
     title="Metropolitan Cobrança API",
     lifespan=lifespan,
+    docs_url=None if IS_PRODUCTION else "/docs",
+    redoc_url=None if IS_PRODUCTION else "/redoc",
+    openapi_url=None if IS_PRODUCTION else "/openapi.json",
 )
 
 # --- CORS Seguro ---
