@@ -6,6 +6,7 @@ import os
 
 from database import create_pool, close_pool
 from security import get_api_key
+from auth_user import get_current_admin
 from routes import cliente, contrato, parcela, dashboard, Onboarding, adiantamento, extrairpdf
 from routes.webhook_btg import router as webhook_btg_router
 from scheduler import criar_scheduler, job_cobrancas, job_verificar_pagamentos_btg
@@ -63,8 +64,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Rotas Protegidas (Exigem x-api-key no header)
-protecao = [Depends(get_api_key)]
+# Rotas Protegidas.
+# Camada 1 (get_current_admin): exige TOKEN DE LOGIN válido + usuário ADMIN.
+#   -> get_current_admin já valida o token (via get_current_user) e, além disso,
+#      confere is_admin no /api/users/me. Todo o painel é área administrativa.
+# Camada 2 (get_api_key): x-api-key como camada secundária (defesa em profundidade).
+protecao = [Depends(get_current_admin), Depends(get_api_key)]
 app.include_router(cliente.router, prefix="/clientes", tags=["Clientes"], dependencies=protecao)
 app.include_router(contrato.router, prefix="/contratos", tags=["Contratos"], dependencies=protecao)
 app.include_router(parcela.router, prefix="/parcelas", tags=["Parcelas"], dependencies=protecao)
@@ -86,12 +91,12 @@ async def root():
         "proximo_btg_check": str(job_btg.next_run_time) if job_btg else None,
     }
 
-@app.post("/admin/disparar-cobrancas", tags=["Admin"], dependencies=[Depends(get_api_key)])
+@app.post("/admin/disparar-cobrancas", tags=["Admin"], dependencies=protecao)
 async def disparar_cobrancas_manual():
     await job_cobrancas()
     return {"mensagem": "Job disparado manualmente com sucesso!"}
 
-@app.post("/admin/verificar-pagamentos-btg", tags=["Admin"], dependencies=[Depends(get_api_key)])
+@app.post("/admin/verificar-pagamentos-btg", tags=["Admin"], dependencies=protecao)
 async def verificar_pagamentos_btg_manual():
     """Dispara verificação de pagamentos BTG manualmente."""
     await job_verificar_pagamentos_btg()
