@@ -29,6 +29,10 @@ class AdiantamentoUpdate(BaseModel):
     data_receber:  Optional[date]    = None
 
 
+class ReceberIn(BaseModel):
+    valor_receber: Optional[Decimal] = None  # default = valor já cadastrado
+
+
 # ─────────────── Rotas ───────────────
 
 @router.get("/")
@@ -148,7 +152,7 @@ async def atualizar_adiantamento(adiantamento_id: int, payload: AdiantamentoUpda
 
 
 @router.post("/{adiantamento_id}/receber")
-async def marcar_como_recebido(adiantamento_id: int):
+async def marcar_como_recebido(adiantamento_id: int, payload: Optional[ReceberIn] = None):
     """Atalho para marcar um adiantamento como recebido."""
     pool = get_pool()
     row = await pool.fetchrow(
@@ -161,9 +165,14 @@ async def marcar_como_recebido(adiantamento_id: int):
     if row["status"] == "cancelado":
         raise HTTPException(400, "Adiantamento cancelado")
 
+    valor = payload.valor_receber if payload else None
+    if valor is not None and valor <= 0:
+        raise HTTPException(400, "Valor recebido inválido")
+
     updated = await pool.fetchrow(
-        "UPDATE adiantamentos SET status = 'recebido' WHERE id = $1 RETURNING *",
+        "UPDATE adiantamentos SET status = 'recebido', valor_receber = COALESCE($2, valor_receber) WHERE id = $1 RETURNING *",
         adiantamento_id,
+        valor,
     )
     return {"mensagem": "Marcado como recebido", "adiantamento": dict(updated)}
 
